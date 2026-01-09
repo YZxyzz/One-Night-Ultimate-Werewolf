@@ -42,6 +42,7 @@ const App: React.FC = () => {
   const [gameDeck, setGameDeck] = useState<RoleType[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
+  const [inviteCopied, setInviteCopied] = useState(false); // UI feedback state
 
   // P2P Refs
   const peerRef = useRef<any>(null);
@@ -61,6 +62,48 @@ const App: React.FC = () => {
   const sendToHost = (msg: NetworkMessage) => {
     if (hostConnRef.current && hostConnRef.current.open) {
       hostConnRef.current.send(msg);
+    }
+  };
+
+  // --- Auto-Join Logic via URL ---
+  useEffect(() => {
+    // Check if URL has ?room=XXXX
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      setRoomInput(roomParam);
+    }
+  }, []);
+
+  const copyInviteLink = async () => {
+    // Construct a clean URL without existing query params first
+    const baseUrl = window.location.origin + window.location.pathname;
+    const inviteUrl = `${baseUrl}?room=${gameState.roomCode}`;
+
+    // Try native share first (works on mobile)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: '加入一夜狼人杀',
+          text: `来和我一起玩一夜狼人杀！房间号：${gameState.roomCode}`,
+          url: inviteUrl,
+        });
+        return; // If shared successfully, no need to copy (or we can do both)
+      } catch (err) {
+        // Fallback to copy if user cancelled or share failed
+        console.log('Share cancelled or failed, falling back to copy');
+      }
+    }
+
+    // Fallback: Copy to clipboard
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setInviteCopied(true);
+      setTimeout(() => setInviteCopied(false), 2500);
+    } catch (err) {
+      console.error('Failed to copy', err);
+      // Fallback for older browsers or non-secure contexts
+      alert(`无法自动复制，请手动分享房间号：${gameState.roomCode}`);
     }
   };
 
@@ -112,7 +155,16 @@ const App: React.FC = () => {
 
     peer.on('error', (err: any) => {
       console.error(err);
-      setConnectionError('无法创建房间，代码可能已被占用，请重试。');
+      if (err.type === 'unavailable-id') {
+         setConnectionError('房间号冲突，正在重试...');
+         // Simple retry logic could go here, or just ask user to click again which generates new random
+         setTimeout(() => {
+             setIsConnecting(false); 
+             createRoom(); // Retry once
+         }, 1000);
+         return;
+      }
+      setConnectionError('无法创建房间，请重试。');
       setIsConnecting(false);
     });
 
@@ -168,13 +220,7 @@ const App: React.FC = () => {
           shouldBroadcast = true;
           break;
 
-        // Note: Night actions usually just update server state privately, 
-        // but for this P2P model we sync everything but UI hides secrets based on local identity
-        // In a real cheat-proof app, we wouldn't broadcast full state.
         case 'ACTION_NIGHT': 
-           // For simplicity in this demo, night actions don't change shared state visibly 
-           // except transitioning phases. 
-           // Complex logic would go here.
            break;
       }
 
@@ -214,11 +260,6 @@ const App: React.FC = () => {
        conn.on('data', (data: NetworkMessage) => {
          if (data.type === 'SYNC_STATE') {
             setGameState(data.state);
-            // Also sync deck for visuals if game started
-            if (data.state.players[0]?.role) {
-                // If roles are assigned, we need to infer the deck or pass it. 
-                // For simplicity, we just rely on state.players having roles.
-            }
          }
        });
 
@@ -318,8 +359,6 @@ const App: React.FC = () => {
              return nextState;
           }
           const nextState = { ...prev, timer: prev.timer - 1 };
-          // Optional: Don't broadcast every second to save bandwidth, 
-          // but for <10 players it's fine.
           if (prev.timer % 5 === 0) broadcastState(nextState); 
           return nextState;
         });
@@ -369,9 +408,7 @@ const App: React.FC = () => {
   };
   
   const handleNightAction = (actionType: string, targetIds: string[]) => {
-       // Night actions are tricky in P2P without a dedicated server to keep secrets.
-       // For this prototype, we handle logic locally in NightPhase and just confirm "I acted"
-       // Real state updates are minimal or local-only for info gathering.
+       // Night actions logic
   };
 
 
@@ -517,45 +554,57 @@ const App: React.FC = () => {
             </div>
             
             <div className="space-y-6">
-                <div className="bg-paperDark p-4 border-sketch-sm">
-                    <label className="block text-center text-xs text-ink font-bold tracking-[0.2em] uppercase mb-3">
-                        选择仪式人数 (Players)
-                    </label>
-                    <div className="flex justify-between items-center px-4">
-                        <button 
-                            onClick={() => setTargetPlayerCount(Math.max(3, targetPlayerCount - 1))}
-                            className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
-                        >-</button>
-                        <span className="font-woodcut text-3xl">{targetPlayerCount}</span>
-                        <button 
-                            onClick={() => setTargetPlayerCount(Math.min(10, targetPlayerCount + 1))}
-                            className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
-                        >+</button>
-                    </div>
-                </div>
+                {/* ROOM INPUT SECTION */}
+                {!roomInput ? (
+                    <>
+                        <div className="bg-paperDark p-4 border-sketch-sm">
+                            <label className="block text-center text-xs text-ink font-bold tracking-[0.2em] uppercase mb-3">
+                                选择仪式人数 (Players)
+                            </label>
+                            <div className="flex justify-between items-center px-4">
+                                <button 
+                                    onClick={() => setTargetPlayerCount(Math.max(3, targetPlayerCount - 1))}
+                                    className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
+                                >-</button>
+                                <span className="font-woodcut text-3xl">{targetPlayerCount}</span>
+                                <button 
+                                    onClick={() => setTargetPlayerCount(Math.min(10, targetPlayerCount + 1))}
+                                    className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
+                                >+</button>
+                            </div>
+                        </div>
 
-                <Button fullWidth onClick={createRoom}>
-                    <span className="text-xl">创建房间 (Create)</span>
-                </Button>
-                
-                <div className="flex gap-3 items-center">
-                    <div className="h-px bg-ink flex-1 opacity-20"></div>
-                    <span className="font-woodcut text-ink/40 text-lg">OR</span>
-                    <div className="h-px bg-ink flex-1 opacity-20"></div>
-                </div>
-                
-                <div className="flex gap-2">
-                    <input 
-                        type="number" 
-                        placeholder="房间号"
-                        className="w-24 bg-paperDark border-2 border-ink p-2 text-center font-woodcut text-xl focus:outline-none focus:shadow-sketch"
-                        value={roomInput}
-                        onChange={e => setRoomInput(e.target.value)}
-                    />
-                    <Button variant="secondary" onClick={joinRoom} className="flex-1">
-                        <span className="text-lg">加入房间 (Join)</span>
+                        <Button fullWidth onClick={createRoom}>
+                            <span className="text-xl">创建房间 (Create)</span>
+                        </Button>
+                        
+                        <div className="flex gap-3 items-center">
+                            <div className="h-px bg-ink flex-1 opacity-20"></div>
+                            <span className="font-woodcut text-ink/40 text-lg">OR</span>
+                            <div className="h-px bg-ink flex-1 opacity-20"></div>
+                        </div>
+                        
+                        <div className="flex gap-2">
+                            <input 
+                                type="number" 
+                                placeholder="房间号"
+                                className="w-24 bg-paperDark border-2 border-ink p-2 text-center font-woodcut text-xl focus:outline-none focus:shadow-sketch"
+                                value={roomInput}
+                                onChange={e => setRoomInput(e.target.value)}
+                            />
+                            <Button variant="secondary" onClick={joinRoom} className="flex-1" disabled={!roomInput}>
+                                <span className="text-lg">加入房间 (Join)</span>
+                            </Button>
+                        </div>
+                    </>
+                ) : (
+                    // IF ROOM INPUT EXISTS (e.g. from URL), SHOW JOIN BUTTON DIRECTLY
+                     <Button variant="secondary" onClick={joinRoom} fullWidth>
+                        <span className="text-xl">加入房间 #{roomInput}</span>
+                        <span className="text-xs">Join Room</span>
                     </Button>
-                </div>
+                )}
+
                 {connectionError && <p className="text-center text-red-700 text-sm font-bold">{connectionError}</p>}
             </div>
           </div>
@@ -569,16 +618,39 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="bg-paper p-6 border-sketch shadow-sketch text-center relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-2 bg-ink/5"></div>
+                
+                {/* Lobby Info Header */}
                 <div className="flex justify-between items-center border-b-2 border-ink pb-2 mb-4 border-dashed">
                     <div className="text-left">
                         <span className="block text-[10px] uppercase tracking-widest text-inkLight">Room Code</span>
-                        <span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span>
+                        <div className="flex items-center gap-2">
+                            <span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span>
+                        </div>
                     </div>
+                    
+                    {/* INVITE BUTTON */}
                     <div className="text-right">
-                        <span className="block text-[10px] uppercase tracking-widest text-inkLight">Joined</span>
-                        <span className="font-woodcut text-3xl text-ink">{gameState.players.length}<span className="text-base text-inkLight">/{gameState.settings.playerCount}</span></span>
+                       <button 
+                            onClick={copyInviteLink} 
+                            className={`flex items-center gap-2 px-3 py-1 border-2 transition-all duration-300 rounded-full
+                                ${inviteCopied ? 'bg-green-700 border-green-700 text-white' : 'bg-paper border-ink hover:bg-ink hover:text-paper'}
+                            `}
+                        >
+                            {inviteCopied ? (
+                                <>
+                                  <span className="text-lg font-bold">✓</span>
+                                  <span className="text-xs font-bold uppercase tracking-wider">已复制</span>
+                                </>
+                            ) : (
+                                <>
+                                  <span className="text-lg">✉</span>
+                                  <span className="text-xs font-bold uppercase tracking-wider">邀请好友</span>
+                                </>
+                            )}
+                        </button>
                     </div>
                 </div>
+
                 {renderSeatingChart()}
                 {!localPlayer?.seatNumber && (
                     <p className="text-center text-rust font-bold animate-pulse">请点击空位入座 / Click a seat to join</p>
