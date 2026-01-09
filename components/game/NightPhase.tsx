@@ -345,21 +345,26 @@ const NightPhase: React.FC<NightPhaseProps> = ({
 
                   if (!isLoneWolf) {
                     return (
-                       <div className="sketch-border p-8 rounded-xl text-center max-w-lg bg-red-50">
+                       <div className="sketch-border p-8 rounded-xl text-center max-w-lg bg-red-50/50 w-full animate-fade-in-up">
                           <h3 className="font-mystical text-2xl text-danger mb-2">狼群集结</h3>
-                          <p className="text-sm text-red-800 mb-6 tracking-widest uppercase">The Pack United</p>
+                          <p className="text-sm text-red-800 mb-6 tracking-widest uppercase border-b border-red-800/20 pb-2">The Pack United</p>
                           <div className="flex flex-wrap justify-center gap-6">
                             {teammates.map(p => (
-                               <div key={p.id} className="flex flex-col items-center">
-                                  <div className="w-20 h-20 rounded-full border-2 border-danger flex items-center justify-center bg-white shadow-md">
-                                    <span className="text-3xl">🐺</span>
-                                  </div>
-                                  <span className="mt-3 font-bold text-danger tracking-widest">{p.name}</span>
+                               <div key={p.id} className="flex flex-col items-center group">
+                                  {/* USE PLAYING CARD FOR TEAMMATES */}
+                                  <PlayingCard 
+                                    role={p.initialRole} 
+                                    isRevealed={true} 
+                                    isSelected={true}
+                                    label={`#${p.seatNumber}`}
+                                    size="md"
+                                  />
+                                  <span className="mt-3 font-bold text-danger tracking-widest text-lg">{p.name}</span>
                                </div>
                             ))}
                           </div>
                           {!hasActed ? (
-                             <div className="mt-8 max-w-xs mx-auto">
+                             <div className="mt-10 max-w-xs mx-auto">
                                 <Button onClick={() => setHasActed(true)} variant="danger" fullWidth>
                                   <div className="flex flex-col">
                                     <span>确认同伴</span>
@@ -368,15 +373,18 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                                 </Button>
                              </div>
                           ) : (
-                            <div className="mt-6 text-danger font-bold">已确认 / Confirmed</div>
+                            <div className="mt-6 text-danger font-bold text-xl animate-pulse">已确认 / Confirmed</div>
                           )}
                        </div>
                     );
                   } else {
                     return (
-                      <div className="w-full">
-                        <p className="text-center text-danger mb-1 font-bold tracking-widest text-xl">孤狼</p>
-                        <p className="text-center text-red-800 mb-6 text-sm uppercase">Lone Wolf: Seek Power in the Center</p>
+                      <div className="w-full animate-fade-in-up">
+                         <div className="flex items-center justify-center mb-6 flex-col">
+                            <h3 className="text-2xl text-danger font-bold tracking-widest uppercase">孤狼 (Lone Wolf)</h3>
+                            <p className="text-inkDim text-sm font-serif italic">"没有同伴... 但你可以窥探命运。"</p>
+                         </div>
+                        
                         {renderCenterCards(1, seerSelectedCenterIndices, setSeerSelectedCenterIndices, () => {
                            if (seerSelectedCenterIndices.length !== 1) return;
                            const idx = seerSelectedCenterIndices[0];

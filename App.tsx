@@ -14,7 +14,7 @@ type NetworkMessage =
   | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
   | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
-  | { type: 'ACTION_GAME_OVER'; winners: RoleTeam[] }; // Not fully implemented yet, but good for future
+  | { type: 'ACTION_GAME_OVER'; winners: RoleTeam[] }; 
 
 const getInitialState = (): GameState => ({
   roomCode: '',
@@ -42,12 +42,15 @@ const App: React.FC = () => {
   const [gameDeck, setGameDeck] = useState<RoleType[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
-  const [voteConfirmed, setVoteConfirmed] = useState(false); // Local UI state
+  const [voteConfirmed, setVoteConfirmed] = useState(false); 
 
   // P2P Refs
   const peerRef = useRef<any>(null);
   const connectionsRef = useRef<any[]>([]); 
   const hostConnRef = useRef<any>(null); 
+  
+  // CRITICAL: Keep track of my ID in a ref so callbacks can always access the stable ID
+  const myIdRef = useRef<string | null>(null);
 
   // --- Utility: Broadcast (Host Only) ---
   const broadcastState = (newState: GameState) => {
@@ -93,12 +96,14 @@ const App: React.FC = () => {
     
     const code = Math.floor(1000 + Math.random() * 9000).toString();
     const peerId = `ns-wolf-${code}`; 
+    const pid = crypto.randomUUID();
+    myIdRef.current = pid; // Store ID immediately
     
     const Peer = (window as any).Peer;
     const peer = new Peer(peerId);
 
     peer.on('open', (id: string) => {
-      const newPlayer: Player = { id: crypto.randomUUID(), name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
+      const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
       setLocalPlayer(newPlayer);
       setGameState({ 
           ...getInitialState(), 
@@ -142,6 +147,7 @@ const App: React.FC = () => {
             newState.players = [...newState.players, data.player];
           }
           shouldBroadcast = true;
+          // Send immediate sync to this specific client so they know they are joined
           conn.send({ type: 'SYNC_STATE', state: newState }); 
           break;
 
@@ -162,7 +168,6 @@ const App: React.FC = () => {
           break;
           
         case 'ACTION_PHASE_CHANGE':
-           // Allow host to trigger phase changes via message (or local)
            newState.currentPhase = data.phase;
            if (data.speakerId) newState.speakerId = data.speakerId;
            shouldBroadcast = true;
@@ -195,7 +200,10 @@ const App: React.FC = () => {
          console.log('Connected to Host');
          hostConnRef.current = conn;
          
-         const newPlayer: Player = { id: crypto.randomUUID(), name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
+         const pid = crypto.randomUUID();
+         myIdRef.current = pid; // Store ID immediately
+
+         const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
          setLocalPlayer(newPlayer);
          conn.send({ type: 'HELLO', player: newPlayer });
          setIsConnecting(false);
@@ -204,15 +212,21 @@ const App: React.FC = () => {
        conn.on('data', (data: NetworkMessage) => {
          if (data.type === 'SYNC_STATE') {
             setGameState(prev => {
-                // IMPORTANT: Client Logic to Sync Local Player Role
-                // When state comes in, we must update our 'localPlayer' to match the one in the server state
-                // This ensures we get our Role and Seat Number updates
-                if (localPlayer) {
-                    const meOnServer = data.state.players.find(p => p.id === localPlayer.id);
+                // CRITICAL FIX: Always update localPlayer from the incoming state using the stable ref ID
+                if (myIdRef.current) {
+                    const meOnServer = data.state.players.find(p => p.id === myIdRef.current);
                     if (meOnServer) {
-                        // We check if something meaningful changed to avoid infinite loops if we put this in useEffect
-                        // But here in the event handler, it's safe to update state
-                        setLocalPlayer(meOnServer); 
+                        // Check if role changed (aka game started)
+                        setLocalPlayer(prevLocal => {
+                            // Only update if something meaningful changed to avoid render loop
+                            if (!prevLocal 
+                                || prevLocal.role !== meOnServer.role 
+                                || prevLocal.seatNumber !== meOnServer.seatNumber
+                                || prevLocal.initialRole !== meOnServer.initialRole) {
+                                return meOnServer;
+                            }
+                            return prevLocal;
+                        });
                     }
                 }
                 return data.state;
@@ -251,7 +265,6 @@ const App: React.FC = () => {
           setLocalPlayer(prev => prev ? ({...prev, seatNumber: seatNum}) : null);
       } else {
           sendToHost({ type: 'ACTION_CLAIM_SEAT', playerId: localPlayer.id, seatNumber: seatNum });
-          // Optimistic update
           setLocalPlayer(prev => prev ? ({...prev, seatNumber: seatNum}) : null);
       }
   };
@@ -268,7 +281,7 @@ const App: React.FC = () => {
   const hostTriggerPhase = (phase: GamePhase, extra?: any) => {
       if (!localPlayer?.isHost) return;
       const msg: NetworkMessage = { type: 'ACTION_PHASE_CHANGE', phase, ...extra };
-      handleHostMessage(msg, null); // Update local
+      handleHostMessage(msg, null); 
   };
 
   const startGame = async () => {
@@ -286,7 +299,7 @@ const App: React.FC = () => {
         players: updatedPlayers, 
         centerCards: shuffled.slice(updatedPlayers.length), 
         currentPhase: GamePhase.ROLE_REVEAL, 
-        timer: 5, // REDUCED TIME to 5s
+        timer: 5, 
         votes: {} 
     };
     
@@ -349,7 +362,7 @@ const App: React.FC = () => {
           const speakerId = prev.players[randomIdx].id;
           nextState = { 
               ...prev, 
-              currentPhase: GamePhase.DAY_DISCUSSION, // Go to Discussion first
+              currentPhase: GamePhase.DAY_DISCUSSION, 
               timer: 0,
               speakerId: speakerId
           };
@@ -370,7 +383,6 @@ const App: React.FC = () => {
   // --- Render Components ---
 
   const renderLobbyBoardConfig = () => {
-      // ... existing code ...
       const grouped: Record<string, RoleType[]> = {
           [RoleTeam.WEREWOLF]: [],
           [RoleTeam.VILLAGER]: [],
@@ -422,7 +434,6 @@ const App: React.FC = () => {
   };
 
   const renderSeatingChart = () => {
-      // ... existing code ...
       const totalSeats = gameState.settings.playerCount;
       const seats = Array.from({ length: totalSeats }, (_, i) => {
           const angle = (i * (360 / totalSeats)) - 90;
