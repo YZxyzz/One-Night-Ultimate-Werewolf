@@ -1,0 +1,7 @@
+{
+  "name": "Network School 桌游助手",
+  "description": "An immersive, mystical board game assistant for 'One Night Ultimate Werewolf' featuring AI narration and stylized sketch aesthetics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
