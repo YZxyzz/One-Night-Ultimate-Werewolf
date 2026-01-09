@@ -5,11 +5,20 @@ class GeminiService {
   private apiKey: string | undefined;
 
   constructor() {
-    this.apiKey = process.env.API_KEY;
+    // CRITICAL FIX: Safe access for process.env
+    // In many browser environments (like standard Vercel static deployments without a bundler polyfill),
+    // accessing 'process' directly throws ReferenceError: process is not defined.
+    try {
+      this.apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
+    } catch (e) {
+      console.warn("Failed to safely access process.env", e);
+      this.apiKey = undefined;
+    }
+
     if (this.apiKey) {
       this.ai = new GoogleGenAI({ apiKey: this.apiKey });
     } else {
-      console.warn("Gemini API Key not found. AI features will be disabled or mocked.");
+      console.warn("Gemini API Key not found. AI features will be disabled.");
     }
   }
 

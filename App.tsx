@@ -8,6 +8,7 @@ import PlayingCard from './components/ui/PlayingCard';
 import { soundService } from './services/soundService';
 
 // --- Safe ID Generator (Fixes Vercel Crash) ---
+// crypto.randomUUID() causes crashes in non-secure contexts (http) or some environments.
 const generateId = () => {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
@@ -48,6 +49,7 @@ const App: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const [voteConfirmed, setVoteConfirmed] = useState(false); 
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   // P2P Refs
   const peerRef = useRef<any>(null);
@@ -94,6 +96,13 @@ const App: React.FC = () => {
     return true;
   };
 
+  const copyInvite = () => {
+    if (!gameState.roomCode) return;
+    navigator.clipboard.writeText(gameState.roomCode);
+    setInviteCopied(true);
+    setTimeout(() => setInviteCopied(false), 2000);
+  };
+
   // --- HOST: Create Room ---
   const createRoom = () => {
     if (!validateName()) return;
@@ -129,7 +138,7 @@ const App: React.FC = () => {
 
         peer.on('error', (err: any) => {
           console.error(err);
-          setConnectionError('无法创建房间 (PeerJS Error)，请重试或检查网络。');
+          setConnectionError('无法创建房间，代码可能已被占用或网络受限。');
           setIsConnecting(false);
         });
 
@@ -368,10 +377,6 @@ const App: React.FC = () => {
       });
 
       // Identify Dead Players 
-      // Rule: The player with the most votes dies. If tie, all tied die.
-      // Must have at least 2 votes to die? Usually for small groups yes, but let's stick to "Max votes dies" for simplicity, or "Max > 1" if we want to be strict.
-      // We will assume simply: Max votes >= 1 dies.
-      
       const deadPlayerIds: string[] = [];
       if (maxVotes > 0) {
           Object.keys(voteCounts).forEach(pid => {
@@ -399,16 +404,12 @@ const App: React.FC = () => {
           winners = [RoleTeam.VILLAGER];
           winningReason = "狼人被处决，好人阵营获胜！(A Werewolf died)";
       } else if (wolfCount === 0 && deadPlayers.length === 0) {
-          // No wolves, no one died -> Villagers win
            winners = [RoleTeam.VILLAGER];
-           winningReason = "没有狼人且无人死亡，大家睡了个好觉。好人获胜！(No Wolves, No Deaths)";
+           winningReason = "没有狼人且无人死亡，好人获胜！(No Wolves, No Deaths)";
       } else if (wolfCount === 0 && deadPlayers.length > 0) {
-           // No wolves, but villager died -> Lose? 
-           // Technically if no wolves, villagers only win if NO ONE dies.
            winners = [RoleTeam.WEREWOLF]; // Treat as a loss for Village
            winningReason = "没有狼人但误杀了无辜者，大家输了。(Innocent killed, Village lost)";
       } else {
-          // Wolves survived (either no one died, or non-wolf/non-tanner died)
           winners = [RoleTeam.WEREWOLF];
           winningReason = "狼人潜伏在村庄中幸存，狼人阵营获胜！(Werewolves Survived)";
       }
@@ -645,12 +646,26 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="bg-paper p-6 border-sketch shadow-sketch text-center relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-2 bg-ink/5"></div>
+                
+                {/* Lobby Room Code Display with Copy Button */}
                 <div className="flex justify-between items-center border-b-2 border-ink pb-2 mb-4 border-dashed">
-                    <div className="text-left"><span className="block text-[10px] uppercase tracking-widest text-inkLight">Room Code</span><span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span></div>
+                    <div className="text-left">
+                        <span className="block text-[10px] uppercase tracking-widest text-inkLight">Room Code</span>
+                        <div className="flex items-center gap-2">
+                            <span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span>
+                            <button 
+                                onClick={copyInvite}
+                                className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 border border-ink/40 hover:bg-ink hover:text-paper transition-all rounded-sm ${inviteCopied ? 'bg-ink text-paper' : ''}`}
+                            >
+                                {inviteCopied ? '已复制 Copied' : '复制邀请 Copy'}
+                            </button>
+                        </div>
+                    </div>
                     <div className="text-right"><span className="block text-[10px] uppercase tracking-widest text-inkLight">Joined</span><span className="font-woodcut text-3xl text-ink">{gameState.players.length}<span className="text-base text-inkLight">/{gameState.settings.playerCount}</span></span></div>
                 </div>
+
                 {renderSeatingChart()}
-                {!localPlayer?.seatNumber && <p className="text-center text-rust font-bold animate-pulse">请点击空位入座 / Click a seat to join</p>}
+                {!localPlayer?.seatNumber && <p className="text-center text-rust font-bold animate-pulse mt-4">请点击空位入座 / Click a seat to join</p>}
             </div>
             {renderLobbyBoardConfig()}
             {localPlayer?.isHost ? (
@@ -804,9 +819,7 @@ const App: React.FC = () => {
       if (!result) return <div className="p-10">Calculating...</div>;
 
       const isWinner = result.winners.some(team => {
-          // Simplified check. In reality, check if my team matches winning team.
-          // Since we don't store "My Final Team" explicitly locally easy, we approximate.
-          // But visual is enough.
+          // Visual check only
           return true; 
       });
 
@@ -814,7 +827,7 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20 animate-fade-in-up">
               <div className="text-center mb-8 mt-4 p-6 bg-paper border-sketch shadow-sketch-lg">
                   <h2 className="text-2xl font-woodcut text-ink mb-2">结局 (Finale)</h2>
-                  <div className="text-4xl font-bold text-rust mb-4">{result.winningReason}</div>
+                  <div className="text-4xl font-bold text-rust mb-4 leading-tight">{result.winningReason}</div>
                   <div className="text-sm font-mono text-inkDim uppercase tracking-widest border-t border-ink/20 pt-2">
                       Winning Team: {result.winners.join(', ')}
                   </div>
@@ -853,6 +866,14 @@ const App: React.FC = () => {
                        ))}
                    </div>
                </div>
+               
+               {localPlayer?.isHost && (
+                    <div className="fixed bottom-6 w-full max-w-md px-6 z-20">
+                         <Button fullWidth onClick={() => window.location.reload()}>
+                            <span className="text-lg">再来一局 (New Ritual)</span>
+                         </Button>
+                    </div>
+               )}
           </div>
       );
   };
@@ -895,10 +916,17 @@ const App: React.FC = () => {
     <div className="min-h-screen text-ink relative overflow-hidden font-serif selection:bg-rust selection:text-white">
       {/* Top Bar */}
       <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-50 pointer-events-none">
-        <div className="font-woodcut text-ink text-sm tracking-widest pointer-events-auto border-b-2 border-ink pb-1 ml-2">
+        <div 
+            className="font-woodcut text-ink text-sm tracking-widest pointer-events-auto border-b-2 border-ink pb-1 ml-2 flex items-center gap-2 cursor-pointer hover:text-rust transition-colors"
+            onClick={copyInvite}
+        >
           {gameState.roomCode && `RITUAL #${gameState.roomCode}`}
+           {inviteCopied && <span className="text-rust text-xs font-bold animate-pulse ml-2">COPIED</span>}
         </div>
-        <button onClick={() => setIsRuleBookOpen(true)} className="pointer-events-auto w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch mr-2 font-serif font-bold text-lg">?</button>
+        
+        <div className="flex gap-2 pointer-events-auto mr-2">
+           <button onClick={() => setIsRuleBookOpen(true)} className="w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch font-serif font-bold text-lg">?</button>
+        </div>
       </div>
       <div className="h-screen w-full pt-16 pb-10 overflow-y-auto relative z-10">
         {gameState.currentPhase === GamePhase.LOBBY ? renderLobby() : renderGameContent()}
