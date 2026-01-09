@@ -32,7 +32,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   const currentNightRole = NIGHT_SEQUENCE[gameState.currentNightRoleIndex];
   const roleDef = ROLES[currentNightRole];
   const [hasActed, setHasActed] = useState(false);
-  const [roleTimer, setRoleTimer] = useState(20);
+  const [roleTimer, setRoleTimer] = useState(15); // Reduced from 20 to 15
   const [currentTipIndex, setCurrentTipIndex] = useState(0);
   const isMyTurn = currentPlayer.initialRole === currentNightRole;
   
@@ -42,7 +42,10 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   // Timer
   useEffect(() => {
     if (!currentPlayer.isHost) return;
-    setRoleTimer(20);
+    // Set timer based on complexity. Werewolves/Seer need more time than Mason.
+    const initialTime = (currentNightRole === RoleType.WEREWOLF || currentNightRole === RoleType.SEER) ? 15 : 10;
+    setRoleTimer(initialTime);
+    
     const interval = setInterval(() => {
       setRoleTimer(prev => {
         if (prev <= 1) {
@@ -54,7 +57,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [gameState.currentNightRoleIndex, currentPlayer.isHost, onGodSpeechComplete]);
+  }, [gameState.currentNightRoleIndex, currentPlayer.isHost, onGodSpeechComplete, currentNightRole]);
 
   // Role Logic State
   const [seerMode, setSeerMode] = useState<'CHOICE' | 'PLAYER' | 'CENTER'>('CHOICE');

@@ -9,12 +9,12 @@ import { soundService } from './services/soundService';
 
 // P2P Message Types
 type NetworkMessage = 
-  | { type: 'HELLO'; player: Player } // Client -> Host: I am joining
-  | { type: 'SYNC_STATE'; state: GameState } // Host -> Client: Here is the truth
+  | { type: 'HELLO'; player: Player } 
+  | { type: 'SYNC_STATE'; state: GameState } 
   | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
-  | { type: 'ACTION_NIGHT'; actionType: string; targetIds: string[]; playerId: string }
-  | { type: 'ADMIN_START_GAME'; };
+  | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
+  | { type: 'ACTION_GAME_OVER'; winners: RoleTeam[] }; // Not fully implemented yet, but good for future
 
 const getInitialState = (): GameState => ({
   roomCode: '',
@@ -42,12 +42,12 @@ const App: React.FC = () => {
   const [gameDeck, setGameDeck] = useState<RoleType[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
-  const [inviteCopied, setInviteCopied] = useState(false); // UI feedback state
+  const [voteConfirmed, setVoteConfirmed] = useState(false); // Local UI state
 
   // P2P Refs
   const peerRef = useRef<any>(null);
-  const connectionsRef = useRef<any[]>([]); // For Host: list of client connections
-  const hostConnRef = useRef<any>(null); // For Client: connection to host
+  const connectionsRef = useRef<any[]>([]); 
+  const hostConnRef = useRef<any>(null); 
 
   // --- Utility: Broadcast (Host Only) ---
   const broadcastState = (newState: GameState) => {
@@ -62,48 +62,6 @@ const App: React.FC = () => {
   const sendToHost = (msg: NetworkMessage) => {
     if (hostConnRef.current && hostConnRef.current.open) {
       hostConnRef.current.send(msg);
-    }
-  };
-
-  // --- Auto-Join Logic via URL ---
-  useEffect(() => {
-    // Check if URL has ?room=XXXX
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      setRoomInput(roomParam);
-    }
-  }, []);
-
-  const copyInviteLink = async () => {
-    // Construct a clean URL without existing query params first
-    const baseUrl = window.location.origin + window.location.pathname;
-    const inviteUrl = `${baseUrl}?room=${gameState.roomCode}`;
-
-    // Try native share first (works on mobile)
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: '加入一夜狼人杀',
-          text: `来和我一起玩一夜狼人杀！房间号：${gameState.roomCode}`,
-          url: inviteUrl,
-        });
-        return; // If shared successfully, no need to copy (or we can do both)
-      } catch (err) {
-        // Fallback to copy if user cancelled or share failed
-        console.log('Share cancelled or failed, falling back to copy');
-      }
-    }
-
-    // Fallback: Copy to clipboard
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      setInviteCopied(true);
-      setTimeout(() => setInviteCopied(false), 2500);
-    } catch (err) {
-      console.error('Failed to copy', err);
-      // Fallback for older browsers or non-secure contexts
-      alert(`无法自动复制，请手动分享房间号：${gameState.roomCode}`);
     }
   };
 
@@ -133,15 +91,13 @@ const App: React.FC = () => {
     if (!validateName()) return;
     setIsConnecting(true);
     
-    // Generate simple 4-digit code
     const code = Math.floor(1000 + Math.random() * 9000).toString();
-    const peerId = `ns-wolf-${code}`; // Namespace to avoid collisions on public server
+    const peerId = `ns-wolf-${code}`; 
     
     const Peer = (window as any).Peer;
     const peer = new Peer(peerId);
 
     peer.on('open', (id: string) => {
-      console.log('Host Peer Open:', id);
       const newPlayer: Player = { id: crypto.randomUUID(), name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
       setLocalPlayer(newPlayer);
       setGameState({ 
@@ -154,27 +110,15 @@ const App: React.FC = () => {
     });
 
     peer.on('error', (err: any) => {
-      console.error(err);
-      if (err.type === 'unavailable-id') {
-         setConnectionError('房间号冲突，正在重试...');
-         // Simple retry logic could go here, or just ask user to click again which generates new random
-         setTimeout(() => {
-             setIsConnecting(false); 
-             createRoom(); // Retry once
-         }, 1000);
-         return;
-      }
-      setConnectionError('无法创建房间，请重试。');
+      setConnectionError('无法创建房间，代码可能已被占用，请重试。');
       setIsConnecting(false);
     });
 
-    // HOST: Handle incoming connections
     peer.on('connection', (conn: any) => {
       conn.on('data', (data: NetworkMessage) => {
         handleHostMessage(data, conn);
       });
       conn.on('open', () => {
-         // Connection opened, wait for HELLO
          connectionsRef.current.push(conn);
       });
       conn.on('close', () => {
@@ -193,20 +137,17 @@ const App: React.FC = () => {
 
       switch (data.type) {
         case 'HELLO':
-          // Check if player already exists (reconnect)
           const exists = newState.players.find(p => p.id === data.player.id);
           if (!exists) {
             newState.players = [...newState.players, data.player];
           }
           shouldBroadcast = true;
-          // Send immediate sync to this specific client
           conn.send({ type: 'SYNC_STATE', state: newState }); 
           break;
 
         case 'ACTION_CLAIM_SEAT':
           const pIdx = newState.players.findIndex(p => p.id === data.playerId);
           if (pIdx > -1) {
-            // Check if seat is taken
             const isTaken = newState.players.some(p => p.seatNumber === data.seatNumber);
             if (!isTaken) {
               newState.players[pIdx].seatNumber = data.seatNumber;
@@ -219,8 +160,12 @@ const App: React.FC = () => {
           newState.votes = { ...newState.votes, [data.voterId]: data.targetId };
           shouldBroadcast = true;
           break;
-
-        case 'ACTION_NIGHT': 
+          
+        case 'ACTION_PHASE_CHANGE':
+           // Allow host to trigger phase changes via message (or local)
+           newState.currentPhase = data.phase;
+           if (data.speakerId) newState.speakerId = data.speakerId;
+           shouldBroadcast = true;
            break;
       }
 
@@ -240,7 +185,7 @@ const App: React.FC = () => {
     setConnectionError('');
 
     const Peer = (window as any).Peer;
-    const peer = new Peer(); // Random ID for client
+    const peer = new Peer(); 
 
     peer.on('open', () => {
        const hostPeerId = `ns-wolf-${roomInput}`;
@@ -250,7 +195,6 @@ const App: React.FC = () => {
          console.log('Connected to Host');
          hostConnRef.current = conn;
          
-         // Send Hello
          const newPlayer: Player = { id: crypto.randomUUID(), name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
          setLocalPlayer(newPlayer);
          conn.send({ type: 'HELLO', player: newPlayer });
@@ -259,17 +203,28 @@ const App: React.FC = () => {
 
        conn.on('data', (data: NetworkMessage) => {
          if (data.type === 'SYNC_STATE') {
-            setGameState(data.state);
+            setGameState(prev => {
+                // IMPORTANT: Client Logic to Sync Local Player Role
+                // When state comes in, we must update our 'localPlayer' to match the one in the server state
+                // This ensures we get our Role and Seat Number updates
+                if (localPlayer) {
+                    const meOnServer = data.state.players.find(p => p.id === localPlayer.id);
+                    if (meOnServer) {
+                        // We check if something meaningful changed to avoid infinite loops if we put this in useEffect
+                        // But here in the event handler, it's safe to update state
+                        setLocalPlayer(meOnServer); 
+                    }
+                }
+                return data.state;
+            });
          }
        });
 
        conn.on('error', (err: any) => {
-         console.error('Conn Error', err);
          setConnectionError('无法连接房间，请检查房间号。');
          setIsConnecting(false);
        });
        
-       // Fallback timeout
        setTimeout(() => {
            if (!hostConnRef.current?.open) {
                setConnectionError('连接超时。请确保房主在线。');
@@ -292,13 +247,11 @@ const App: React.FC = () => {
   const claimSeat = (seatNum: number) => {
       if (!localPlayer) return;
       if (localPlayer.isHost) {
-          // Host updates directly
           handleHostMessage({ type: 'ACTION_CLAIM_SEAT', playerId: localPlayer.id, seatNumber: seatNum }, null);
-          // Update local ref immediately for responsiveness
           setLocalPlayer(prev => prev ? ({...prev, seatNumber: seatNum}) : null);
       } else {
-          // Client sends request
           sendToHost({ type: 'ACTION_CLAIM_SEAT', playerId: localPlayer.id, seatNumber: seatNum });
+          // Optimistic update
           setLocalPlayer(prev => prev ? ({...prev, seatNumber: seatNum}) : null);
       }
   };
@@ -311,16 +264,20 @@ const App: React.FC = () => {
         sendToHost({ type: 'ACTION_VOTE', voterId: localPlayer.id, targetId });
     }
   };
+  
+  const hostTriggerPhase = (phase: GamePhase, extra?: any) => {
+      if (!localPlayer?.isHost) return;
+      const msg: NetworkMessage = { type: 'ACTION_PHASE_CHANGE', phase, ...extra };
+      handleHostMessage(msg, null); // Update local
+  };
 
   const startGame = async () => {
     if (!localPlayer?.isHost) return;
     
-    // Logic: Only Host runs this
     await soundService.init();
     const shuffled = [...projectedDeck].sort(() => 0.5 - Math.random());
     setGameDeck([...shuffled]);
     
-    // Assign roles based on current players in state
     const sortedPlayers = [...gameState.players].sort((a,b) => (a.seatNumber || 99) - (b.seatNumber || 99));
     const updatedPlayers = sortedPlayers.map((p, idx) => ({ ...p, role: shuffled[idx], initialRole: shuffled[idx] }));
     
@@ -329,14 +286,13 @@ const App: React.FC = () => {
         players: updatedPlayers, 
         centerCards: shuffled.slice(updatedPlayers.length), 
         currentPhase: GamePhase.ROLE_REVEAL, 
-        timer: 10, 
+        timer: 5, // REDUCED TIME to 5s
         votes: {} 
     };
     
     setGameState(newState);
     broadcastState(newState);
 
-    // Update my local player reference to match the assigned role
     const me = updatedPlayers.find(p => p.id === localPlayer.id);
     if (me) setLocalPlayer(me);
   };
@@ -345,7 +301,6 @@ const App: React.FC = () => {
   // --- Timers & Phase Transitions (Host Authority) ---
   
   useEffect(() => {
-    // Only Host manages the timer and phase transitions
     if (!localPlayer?.isHost) return;
 
     let interval: ReturnType<typeof setInterval>;
@@ -355,11 +310,11 @@ const App: React.FC = () => {
         setGameState(prev => {
           if (prev.timer <= 1) {
              const nextState = { ...prev, currentPhase: GamePhase.NIGHT_INTRO, timer: 0 };
-             broadcastState(nextState); // Sync Phase Change
+             broadcastState(nextState);
              return nextState;
           }
           const nextState = { ...prev, timer: prev.timer - 1 };
-          if (prev.timer % 5 === 0) broadcastState(nextState); 
+          if (prev.timer % 5 === 0 || prev.timer < 5) broadcastState(nextState); 
           return nextState;
         });
       }, 1000);
@@ -389,13 +344,13 @@ const App: React.FC = () => {
       let nextState = { ...prev };
       
       if (nextIndex >= NIGHT_SEQUENCE.length) {
-          // Night Over -> Day
+          // Night Over -> Day Discussion
           const randomIdx = Math.floor(Math.random() * prev.players.length);
           const speakerId = prev.players[randomIdx].id;
           nextState = { 
               ...prev, 
-              currentPhase: GamePhase.DAY_DISCUSSION, 
-              timer: 300,
+              currentPhase: GamePhase.DAY_DISCUSSION, // Go to Discussion first
+              timer: 0,
               speakerId: speakerId
           };
       } else {
@@ -408,19 +363,19 @@ const App: React.FC = () => {
   };
   
   const handleNightAction = (actionType: string, targetIds: string[]) => {
-       // Night actions logic
+       // Placeholder for night logic
   };
 
 
   // --- Render Components ---
 
   const renderLobbyBoardConfig = () => {
+      // ... existing code ...
       const grouped: Record<string, RoleType[]> = {
           [RoleTeam.WEREWOLF]: [],
           [RoleTeam.VILLAGER]: [],
           [RoleTeam.TANNER]: []
       };
-      
       projectedDeck.forEach(r => {
           const def = ROLES[r];
           if (grouped[def.team]) grouped[def.team].push(r);
@@ -430,24 +385,16 @@ const App: React.FC = () => {
           <div className="w-full mt-6 bg-paperDark border-sketch p-6 relative">
              <div className="absolute -top-3 -left-3 w-8 h-8 rounded-full bg-rust opacity-80 border border-ink"></div>
              <div className="absolute -bottom-3 -right-3 w-8 h-8 rounded-full bg-rust opacity-80 border border-ink"></div>
-             
              <div className="text-center mb-6">
                  <h3 className="font-woodcut text-2xl text-ink">本局仪式配置</h3>
-                 <p className="font-serif italic text-inkLight text-sm">Ritual Configuration</p>
-                 <div className="h-px w-24 bg-ink mx-auto mt-2 opacity-50"></div>
-                 <p className="text-xs mt-1 font-bold">
-                    {gameState.settings.playerCount} 玩家 + 3 底牌
-                 </p>
+                 <p className="text-xs mt-1 font-bold">{gameState.settings.playerCount} 玩家 + 3 底牌</p>
              </div>
-
              <div className="space-y-4">
                  <div className="flex items-center gap-4">
                      <div className="w-16 font-woodcut text-sm text-right text-rust font-bold uppercase tracking-wider">狼人阵营</div>
                      <div className="flex-1 flex flex-wrap gap-2">
                         {grouped[RoleTeam.WEREWOLF].map((r, i) => (
-                            <div key={i} className="px-2 py-1 border border-rust text-rust text-xs font-serif bg-white/50 rounded-sm">
-                                {ROLES[r].name.split('/')[0]}
-                            </div>
+                            <div key={i} className="px-2 py-1 border border-rust text-rust text-xs font-serif bg-white/50 rounded-sm">{ROLES[r].name.split('/')[0]}</div>
                         ))}
                      </div>
                  </div>
@@ -455,9 +402,7 @@ const App: React.FC = () => {
                      <div className="w-16 font-woodcut text-sm text-right text-ink font-bold uppercase tracking-wider">村民阵营</div>
                      <div className="flex-1 flex flex-wrap gap-2">
                         {grouped[RoleTeam.VILLAGER].map((r, i) => (
-                            <div key={i} className="px-2 py-1 border border-ink text-ink text-xs font-serif bg-white/50 rounded-sm">
-                                {ROLES[r].name.split('/')[0]}
-                            </div>
+                            <div key={i} className="px-2 py-1 border border-ink text-ink text-xs font-serif bg-white/50 rounded-sm">{ROLES[r].name.split('/')[0]}</div>
                         ))}
                      </div>
                  </div>
@@ -466,9 +411,7 @@ const App: React.FC = () => {
                         <div className="w-16 font-woodcut text-sm text-right text-inkLight font-bold uppercase tracking-wider">其他</div>
                         <div className="flex-1 flex flex-wrap gap-2">
                             {grouped[RoleTeam.TANNER].map((r, i) => (
-                                <div key={i} className="px-2 py-1 border border-dashed border-ink text-inkLight text-xs font-serif bg-white/50 rounded-sm">
-                                    {ROLES[r].name.split('/')[0]}
-                                </div>
+                                <div key={i} className="px-2 py-1 border border-dashed border-ink text-inkLight text-xs font-serif bg-white/50 rounded-sm">{ROLES[r].name.split('/')[0]}</div>
                             ))}
                         </div>
                     </div>
@@ -479,6 +422,7 @@ const App: React.FC = () => {
   };
 
   const renderSeatingChart = () => {
+      // ... existing code ...
       const totalSeats = gameState.settings.playerCount;
       const seats = Array.from({ length: totalSeats }, (_, i) => {
           const angle = (i * (360 / totalSeats)) - 90;
@@ -487,19 +431,16 @@ const App: React.FC = () => {
           const y = Math.sin((angle * Math.PI) / 180) * radius;
           return { id: i + 1, x, y };
       });
-
       return (
           <div className="relative w-72 h-72 mx-auto my-8">
               <div className="absolute inset-0 m-auto w-40 h-40 rounded-full border-4 border-ink bg-paperDark flex items-center justify-center shadow-sketch">
                   <span className="font-woodcut text-2xl text-ink/20 transform -rotate-12">RITUAL</span>
               </div>
-              
               {seats.map((seat) => {
                   const player = gameState.players.find(p => p.seatNumber === seat.id);
                   const isOccupied = !!player;
                   const isMe = player?.id === localPlayer?.id;
                   const canSit = !isOccupied && localPlayer?.seatNumber === null;
-
                   return (
                       <button 
                         key={seat.id}
@@ -515,16 +456,12 @@ const App: React.FC = () => {
                           {isOccupied ? (
                               <>
                                 <span className="font-woodcut text-lg leading-none">{player.name.charAt(0)}</span>
-                                <span className="text-[8px] uppercase font-bold max-w-full overflow-hidden text-ellipsis whitespace-nowrap px-1">
-                                    {player.id === 'host' ? '房主' : (isMe ? '我' : player.name)}
-                                </span>
+                                <span className="text-[8px] uppercase font-bold max-w-full overflow-hidden text-ellipsis whitespace-nowrap px-1">{player.id === 'host' ? '房主' : (isMe ? '我' : player.name)}</span>
                               </>
                           ) : (
                               <span className="font-woodcut text-sm">{seat.id}号</span>
                           )}
-                          {player?.isHost && (
-                              <div className="absolute -top-1 -right-1 bg-rust text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center border border-paper">H</div>
-                          )}
+                          {player?.isHost && <div className="absolute -top-1 -right-1 bg-rust text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center border border-paper">H</div>}
                       </button>
                   );
               })}
@@ -538,73 +475,33 @@ const App: React.FC = () => {
         <h1 className="text-6xl font-woodcut text-ink mb-1 tracking-tight">Network School</h1>
         <h2 className="text-sm font-antique italic text-inkLight tracking-[0.4em] uppercase">One Night Ritual</h2>
       </div>
-      
       <div className="w-full max-w-lg z-10 p-2">
         {!gameState.roomCode && !isConnecting ? (
           <div className="bg-paper p-8 border-sketch shadow-sketch-lg space-y-8">
             <div className="text-center">
                 <label className="block text-xs text-ink font-bold tracking-[0.2em] uppercase mb-2">签署契约 (Sign Name)</label>
                 <input 
-                    type="text" 
-                    placeholder="你的名字 / YOUR NAME" 
+                    type="text" placeholder="你的名字 / YOUR NAME" 
                     className={`w-full bg-transparent border-b-2 border-ink py-2 text-3xl font-woodcut text-center focus:outline-none focus:border-rust placeholder-ink/20 transition-colors uppercase ${nameError ? 'text-rust border-rust' : ''}`}
                     value={playerName}
                     onChange={e => { setPlayerName(e.target.value); if(e.target.value) setNameError(false); }}
                 />
             </div>
-            
             <div className="space-y-6">
-                {/* ROOM INPUT SECTION */}
-                {!roomInput ? (
-                    <>
-                        <div className="bg-paperDark p-4 border-sketch-sm">
-                            <label className="block text-center text-xs text-ink font-bold tracking-[0.2em] uppercase mb-3">
-                                选择仪式人数 (Players)
-                            </label>
-                            <div className="flex justify-between items-center px-4">
-                                <button 
-                                    onClick={() => setTargetPlayerCount(Math.max(3, targetPlayerCount - 1))}
-                                    className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
-                                >-</button>
-                                <span className="font-woodcut text-3xl">{targetPlayerCount}</span>
-                                <button 
-                                    onClick={() => setTargetPlayerCount(Math.min(10, targetPlayerCount + 1))}
-                                    className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold"
-                                >+</button>
-                            </div>
-                        </div>
-
-                        <Button fullWidth onClick={createRoom}>
-                            <span className="text-xl">创建房间 (Create)</span>
-                        </Button>
-                        
-                        <div className="flex gap-3 items-center">
-                            <div className="h-px bg-ink flex-1 opacity-20"></div>
-                            <span className="font-woodcut text-ink/40 text-lg">OR</span>
-                            <div className="h-px bg-ink flex-1 opacity-20"></div>
-                        </div>
-                        
-                        <div className="flex gap-2">
-                            <input 
-                                type="number" 
-                                placeholder="房间号"
-                                className="w-24 bg-paperDark border-2 border-ink p-2 text-center font-woodcut text-xl focus:outline-none focus:shadow-sketch"
-                                value={roomInput}
-                                onChange={e => setRoomInput(e.target.value)}
-                            />
-                            <Button variant="secondary" onClick={joinRoom} className="flex-1" disabled={!roomInput}>
-                                <span className="text-lg">加入房间 (Join)</span>
-                            </Button>
-                        </div>
-                    </>
-                ) : (
-                    // IF ROOM INPUT EXISTS (e.g. from URL), SHOW JOIN BUTTON DIRECTLY
-                     <Button variant="secondary" onClick={joinRoom} fullWidth>
-                        <span className="text-xl">加入房间 #{roomInput}</span>
-                        <span className="text-xs">Join Room</span>
-                    </Button>
-                )}
-
+                <div className="bg-paperDark p-4 border-sketch-sm">
+                    <label className="block text-center text-xs text-ink font-bold tracking-[0.2em] uppercase mb-3">选择仪式人数 (Players)</label>
+                    <div className="flex justify-between items-center px-4">
+                        <button onClick={() => setTargetPlayerCount(Math.max(3, targetPlayerCount - 1))} className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold">-</button>
+                        <span className="font-woodcut text-3xl">{targetPlayerCount}</span>
+                        <button onClick={() => setTargetPlayerCount(Math.min(10, targetPlayerCount + 1))} className="w-8 h-8 rounded-full border-2 border-ink flex items-center justify-center hover:bg-ink hover:text-paper font-bold">+</button>
+                    </div>
+                </div>
+                <Button fullWidth onClick={createRoom}><span className="text-xl">创建房间 (Create)</span></Button>
+                <div className="flex gap-3 items-center"><div className="h-px bg-ink flex-1 opacity-20"></div><span className="font-woodcut text-ink/40 text-lg">OR</span><div className="h-px bg-ink flex-1 opacity-20"></div></div>
+                <div className="flex gap-2">
+                    <input type="number" placeholder="房间号" className="w-24 bg-paperDark border-2 border-ink p-2 text-center font-woodcut text-xl focus:outline-none focus:shadow-sketch" value={roomInput} onChange={e => setRoomInput(e.target.value)} />
+                    <Button variant="secondary" onClick={joinRoom} className="flex-1"><span className="text-lg">加入房间 (Join)</span></Button>
+                </div>
                 {connectionError && <p className="text-center text-red-700 text-sm font-bold">{connectionError}</p>}
             </div>
           </div>
@@ -618,57 +515,21 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="bg-paper p-6 border-sketch shadow-sketch text-center relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-2 bg-ink/5"></div>
-                
-                {/* Lobby Info Header */}
                 <div className="flex justify-between items-center border-b-2 border-ink pb-2 mb-4 border-dashed">
-                    <div className="text-left">
-                        <span className="block text-[10px] uppercase tracking-widest text-inkLight">Room Code</span>
-                        <div className="flex items-center gap-2">
-                            <span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span>
-                        </div>
-                    </div>
-                    
-                    {/* INVITE BUTTON */}
-                    <div className="text-right">
-                       <button 
-                            onClick={copyInviteLink} 
-                            className={`flex items-center gap-2 px-3 py-1 border-2 transition-all duration-300 rounded-full
-                                ${inviteCopied ? 'bg-green-700 border-green-700 text-white' : 'bg-paper border-ink hover:bg-ink hover:text-paper'}
-                            `}
-                        >
-                            {inviteCopied ? (
-                                <>
-                                  <span className="text-lg font-bold">✓</span>
-                                  <span className="text-xs font-bold uppercase tracking-wider">已复制</span>
-                                </>
-                            ) : (
-                                <>
-                                  <span className="text-lg">✉</span>
-                                  <span className="text-xs font-bold uppercase tracking-wider">邀请好友</span>
-                                </>
-                            )}
-                        </button>
-                    </div>
+                    <div className="text-left"><span className="block text-[10px] uppercase tracking-widest text-inkLight">Room Code</span><span className="font-woodcut text-3xl text-rust">{gameState.roomCode}</span></div>
+                    <div className="text-right"><span className="block text-[10px] uppercase tracking-widest text-inkLight">Joined</span><span className="font-woodcut text-3xl text-ink">{gameState.players.length}<span className="text-base text-inkLight">/{gameState.settings.playerCount}</span></span></div>
                 </div>
-
                 {renderSeatingChart()}
-                {!localPlayer?.seatNumber && (
-                    <p className="text-center text-rust font-bold animate-pulse">请点击空位入座 / Click a seat to join</p>
-                )}
+                {!localPlayer?.seatNumber && <p className="text-center text-rust font-bold animate-pulse">请点击空位入座 / Click a seat to join</p>}
             </div>
-
             {renderLobbyBoardConfig()}
-
             {localPlayer?.isHost ? (
                 <Button fullWidth onClick={startGame} className="mt-4 shadow-sketch-lg" disabled={gameState.players.length < gameState.settings.playerCount}>
                      <span className="text-2xl">开启今夜 (Begin)</span>
                      {gameState.players.length < gameState.settings.playerCount && <span className="text-xs">等待全员入座...</span>}
                 </Button>
               ) : (
-                <div className="text-center p-4">
-                    <p className="animate-pulse font-woodcut text-xl text-ink">等待房主...</p>
-                    <p className="text-xs font-serif italic text-inkLight">Waiting for Host to begin ritual...</p>
-                </div>
+                <div className="text-center p-4"><p className="animate-pulse font-woodcut text-xl text-ink">等待房主...</p><p className="text-xs font-serif italic text-inkLight">Waiting for Host to begin ritual...</p></div>
             )}
           </div>
         )}
@@ -682,7 +543,6 @@ const App: React.FC = () => {
             <div className="border border-ink p-6 text-center bg-paper relative overflow-hidden">
                 <h2 className="text-4xl font-woodcut text-ink mb-1">你的命运</h2>
                 <div className="w-12 h-1 bg-rust mx-auto mb-6"></div>
-                
                 <div className="perspective-1000 mb-8">
                 {localPlayer?.initialRole && (
                     <div className="w-48 h-72 mx-auto relative transform-style-3d animate-float">
@@ -698,7 +558,6 @@ const App: React.FC = () => {
                     </div>
                 )}
                 </div>
-
                 <div className="font-serif text-inkLight italic text-sm mb-4">
                     入夜倒计时 <span className="text-rust font-bold text-lg font-woodcut ml-1">{gameState.timer}</span>s
                 </div>
@@ -707,37 +566,61 @@ const App: React.FC = () => {
      </div>
   );
 
-  const renderDayPhase = () => (
+  const renderDiscussionPhase = () => (
+    <div className="flex flex-col items-center justify-center min-h-full p-6 text-center">
+        <h2 className="text-5xl font-woodcut text-ink mb-2">天亮了</h2>
+        <p className="font-antique italic text-inkLight text-sm mb-8">Daybreak - Discussion</p>
+        
+        {/* Speaker Announcement */}
+        {gameState.speakerId && (
+            <div className="p-8 bg-paperDark border-sketch shadow-sketch animate-float max-w-md w-full mb-10">
+                <p className="text-xs uppercase tracking-widest text-rust font-bold mb-2">古老的灵魂指定发言人</p>
+                <div className="w-16 h-16 bg-ink text-paper rounded-full flex items-center justify-center font-woodcut text-3xl mx-auto mb-4 border-4 border-paper">
+                    {gameState.players.find(p => p.id === gameState.speakerId)?.name.charAt(0)}
+                </div>
+                <div className="font-woodcut text-3xl text-ink mb-2">
+                    {gameState.players.find(p => p.id === gameState.speakerId)?.name || 'Unknown'}
+                </div>
+                <p className="text-sm text-ink/60 italic font-serif">"请从这位玩家开始，顺时针进行陈述..."</p>
+            </div>
+        )}
+
+        {localPlayer?.isHost ? (
+            <div className="fixed bottom-10 w-full max-w-md px-6">
+                <Button fullWidth onClick={() => hostTriggerPhase(GamePhase.DAY_VOTING)}>
+                    <span className="text-xl">开始投票 (Start Voting)</span>
+                </Button>
+            </div>
+        ) : (
+            <p className="text-inkDim animate-pulse">等待房主开启投票...</p>
+        )}
+    </div>
+  );
+
+  const renderVotingPhase = () => (
     <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20">
         <div className="text-center mb-8 mt-4">
-            <h2 className="text-5xl font-woodcut text-ink">天亮了</h2>
-            <p className="font-antique italic text-inkLight text-sm">Daybreak - Discussion</p>
-            
-            {/* Random Speaker Announcement */}
-            {gameState.speakerId && (
-                <div className="mt-4 p-4 bg-paperDark border-sketch animate-float max-w-xs mx-auto">
-                    <p className="text-xs uppercase tracking-widest text-inkLight mb-1">被选中的发言人 / First Speaker</p>
-                    <div className="font-woodcut text-2xl text-rust">
-                        {gameState.players.find(p => p.id === gameState.speakerId)?.name || 'Unknown'}
-                    </div>
-                    <p className="text-[10px] text-ink/60 italic">古老的灵魂指定此人率先打破沉默。</p>
-                </div>
-            )}
+            <h2 className="text-4xl font-woodcut text-rust">审判时刻</h2>
+            <p className="font-antique italic text-inkLight text-sm">Point your finger. Choose wisely.</p>
         </div>
 
         <div className="w-full max-w-4xl grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             {gameState.players.map(p => {
                 const isMe = p.id === localPlayer?.id;
-                const isSelected = gameState.votes[localPlayer?.id || ''] === p.id;
+                // Determine if *I* have selected this person
+                const isSelectedByMe = gameState.votes[localPlayer?.id || ''] === p.id;
                 
                 return (
                     <div 
                         key={p.id} 
-                        onClick={() => !isMe && castVote(p.id)}
+                        onClick={() => {
+                            if (!isMe && !voteConfirmed) castVote(p.id);
+                        }}
                         className={`
                             relative flex flex-col items-center p-4 transition-all cursor-pointer bg-paper
-                            border-2 ${isSelected ? 'border-rust shadow-sketch' : 'border-ink hover:-translate-y-1 hover:shadow-sketch'}
+                            border-2 ${isSelectedByMe ? 'border-rust shadow-sketch scale-105' : 'border-ink hover:-translate-y-1 hover:shadow-sketch'}
                             ${isMe ? 'opacity-50 cursor-not-allowed border-dashed' : ''}
+                            ${voteConfirmed ? 'pointer-events-none grayscale opacity-80' : ''}
                         `}
                         style={{ borderRadius: '255px 15px 225px 15px / 15px 225px 15px 255px' }}
                     >
@@ -745,13 +628,12 @@ const App: React.FC = () => {
                             <span className="text-xl font-woodcut">{p.name.charAt(0)}</span>
                         </div>
                         <div className="font-woodcut text-base text-ink">{p.name}</div>
-                        {/* Seat Badge */}
                         <div className="absolute top-2 left-2 w-5 h-5 bg-paperDark border border-ink rounded-full flex items-center justify-center text-[10px] font-bold">
                             {p.seatNumber}
                         </div>
                         
-                        {isSelected && (
-                            <div className="absolute -top-2 -right-2 bg-rust text-white rounded-full w-8 h-8 flex items-center justify-center font-bold border-2 border-paper shadow-sm z-10">
+                        {isSelectedByMe && (
+                            <div className="absolute -top-3 -right-3 bg-rust text-white rounded-full w-8 h-8 flex items-center justify-center font-bold border-2 border-paper shadow-sm z-10 animate-bounce">
                                 ⚔
                             </div>
                         )}
@@ -759,19 +641,30 @@ const App: React.FC = () => {
                 )
             })}
         </div>
+        
+        <div className="fixed bottom-6 w-full max-w-md px-6 z-20 space-y-4">
+            {!voteConfirmed ? (
+                <Button fullWidth variant="danger" 
+                    disabled={!gameState.votes[localPlayer?.id || '']}
+                    onClick={() => setVoteConfirmed(true)}
+                >
+                     <span className="text-xl">确认投票 (Confirm)</span>
+                </Button>
+            ) : (
+                <div className="text-center p-4 bg-paper border-sketch">
+                    <p className="font-woodcut text-rust text-xl">已锁定 (Locked)</p>
+                    <p className="text-xs text-inkDim">等待其他人...</p>
+                </div>
+            )}
 
-        <div className="flex gap-4 justify-center mb-8">
-             {[1,2,3].map(i => (
-                 <div key={i} className="w-16 h-24 bg-ink border-2 border-paper flex items-center justify-center shadow-sketch-lg">
-                     <span className="text-paper/20 font-woodcut text-xl">?</span>
-                 </div>
-             ))}
-        </div>
-
-        <div className="fixed bottom-6 w-full max-w-md px-6 z-20">
-            <Button fullWidth variant="danger" disabled={!gameState.votes[localPlayer?.id || '']}>
-                 <span className="text-xl">确认投票 (Vote)</span>
-            </Button>
+            {localPlayer?.isHost && (
+                <div className="pt-4 border-t border-ink/20">
+                     <p className="text-center text-xs mb-2 text-inkDim">已投票: {Object.keys(gameState.votes).length} / {gameState.players.length}</p>
+                     <Button fullWidth variant="primary" onClick={() => hostTriggerPhase(GamePhase.DAY_RESULTS)}>
+                        <span className="text-lg">公布结果 (Reveal Results)</span>
+                     </Button>
+                </div>
+            )}
         </div>
     </div>
   );
@@ -789,10 +682,22 @@ const App: React.FC = () => {
         />
       );
     }
-    if (gameState.currentPhase === GamePhase.DAY_DISCUSSION || gameState.currentPhase === GamePhase.DAY_VOTING) {
-        return renderDayPhase();
+    if (gameState.currentPhase === GamePhase.DAY_DISCUSSION) {
+        return renderDiscussionPhase();
     }
-    return <div className="p-10 text-center text-ink font-woodcut text-4xl mt-20">Game Over</div>;
+    if (gameState.currentPhase === GamePhase.DAY_VOTING) {
+        return renderVotingPhase();
+    }
+    if (gameState.currentPhase === GamePhase.GAME_OVER || gameState.currentPhase === GamePhase.DAY_RESULTS) {
+        return <div className="p-10 text-center text-ink font-woodcut text-4xl mt-20">Game Over <br/><span className="text-base text-inkDim font-serif">(Result screen coming soon)</span></div>;
+    }
+    // Default safe loading state to prevent glitched Game Over
+    return (
+        <div className="flex flex-col items-center justify-center h-full">
+            <div className="w-12 h-12 border-4 border-ink border-t-transparent rounded-full animate-spin"></div>
+            <p className="mt-4 font-woodcut text-ink">仪式进行中...</p>
+        </div>
+    );
   };
 
   return (
@@ -802,27 +707,12 @@ const App: React.FC = () => {
         <div className="font-woodcut text-ink text-sm tracking-widest pointer-events-auto border-b-2 border-ink pb-1 ml-2">
           {gameState.roomCode && `RITUAL #${gameState.roomCode}`}
         </div>
-        <button 
-          onClick={() => setIsRuleBookOpen(true)} 
-          className="pointer-events-auto w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch mr-2 font-serif font-bold text-lg"
-        >
-          ?
-        </button>
+        <button onClick={() => setIsRuleBookOpen(true)} className="pointer-events-auto w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch mr-2 font-serif font-bold text-lg">?</button>
       </div>
-
       <div className="h-screen w-full pt-16 pb-10 overflow-y-auto relative z-10">
-        {gameState.currentPhase === GamePhase.LOBBY 
-          ? renderLobby()
-          : renderGameContent()
-        }
+        {gameState.currentPhase === GamePhase.LOBBY ? renderLobby() : renderGameContent()}
       </div>
-
-      <RuleBook 
-        isOpen={isRuleBookOpen} 
-        onClose={() => setIsRuleBookOpen(false)}
-        activeRoleTypes={gameDeck.length > 0 ? gameDeck : projectedDeck}
-        myRole={localPlayer?.initialRole}
-      />
+      <RuleBook isOpen={isRuleBookOpen} onClose={() => setIsRuleBookOpen(false)} activeRoleTypes={gameDeck.length > 0 ? gameDeck : projectedDeck} myRole={localPlayer?.initialRole} />
     </div>
   );
 };
