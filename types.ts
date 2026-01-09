@@ -4,10 +4,10 @@ export enum GamePhase {
   ROLE_REVEAL = 'ROLE_REVEAL',
   NIGHT_INTRO = 'NIGHT_INTRO',
   NIGHT_ACTIVE = 'NIGHT_ACTIVE',
-  DAY_DISCUSSION = 'DAY_DISCUSSION', // New: Free discussion
-  DAY_VOTING = 'DAY_VOTING',         // New: Voting active
-  DAY_RESULTS = 'DAY_RESULTS',       // New: Who died?
-  GAME_REVIEW = 'GAME_REVIEW',       // New: Who was who?
+  DAY_DISCUSSION = 'DAY_DISCUSSION', 
+  DAY_VOTING = 'DAY_VOTING',         
+  DAY_RESULTS = 'DAY_RESULTS',       
+  GAME_REVIEW = 'GAME_REVIEW',       
   GAME_OVER = 'GAME_OVER'
 }
 
@@ -54,6 +54,12 @@ export interface RoleDefinition {
   imagePlaceholder: string;
 }
 
+export interface GameResult {
+  winners: RoleTeam[];
+  deadPlayerIds: string[];
+  winningReason: string;
+}
+
 export interface GameState {
   roomCode: string;
   players: Player[];
@@ -67,5 +73,6 @@ export interface GameState {
   };
   votes: Record<string, string>; // voterId -> targetId
   speakerId?: string; // ID of the player randomly selected to start discussion
+  gameResult?: GameResult; // The final calculated result
   log: string[];
 }

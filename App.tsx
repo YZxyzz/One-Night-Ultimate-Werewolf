@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { GamePhase, GameState, RoleType, Player, RoleTeam } from './types';
+import { GamePhase, GameState, RoleType, Player, RoleTeam, GameResult } from './types';
 import { ROLES, DEFAULT_PLAYER_COUNT, NIGHT_SEQUENCE } from './constants';
 import Button from './components/ui/Button';
 import NightPhase from './components/game/NightPhase';
 import RuleBook from './components/game/RuleBook';
 import PlayingCard from './components/ui/PlayingCard'; 
 import { soundService } from './services/soundService';
+
+// --- Safe ID Generator (Fixes Vercel Crash) ---
+const generateId = () => {
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
 
 // P2P Message Types
 type NetworkMessage = 
@@ -14,7 +19,7 @@ type NetworkMessage =
   | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
   | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
-  | { type: 'ACTION_GAME_OVER'; winners: RoleTeam[] }; 
+  | { type: 'ACTION_GAME_OVER'; result: GameResult }; 
 
 const getInitialState = (): GameState => ({
   roomCode: '',
@@ -94,44 +99,58 @@ const App: React.FC = () => {
     if (!validateName()) return;
     setIsConnecting(true);
     
+    // Check if Peer is loaded
+    if (!(window as any).Peer) {
+        setConnectionError('网络组件未加载，请刷新页面重试。');
+        setIsConnecting(false);
+        return;
+    }
+
     const code = Math.floor(1000 + Math.random() * 9000).toString();
     const peerId = `ns-wolf-${code}`; 
-    const pid = crypto.randomUUID();
+    const pid = generateId();
     myIdRef.current = pid; // Store ID immediately
     
-    const Peer = (window as any).Peer;
-    const peer = new Peer(peerId);
+    try {
+        const Peer = (window as any).Peer;
+        const peer = new Peer(peerId);
 
-    peer.on('open', (id: string) => {
-      const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
-      setLocalPlayer(newPlayer);
-      setGameState({ 
-          ...getInitialState(), 
-          roomCode: code, 
-          players: [newPlayer],
-          settings: { ...getInitialState().settings, playerCount: targetPlayerCount }
-      });
-      setIsConnecting(false);
-    });
+        peer.on('open', (id: string) => {
+          const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
+          setLocalPlayer(newPlayer);
+          setGameState({ 
+              ...getInitialState(), 
+              roomCode: code, 
+              players: [newPlayer],
+              settings: { ...getInitialState().settings, playerCount: targetPlayerCount }
+          });
+          setIsConnecting(false);
+        });
 
-    peer.on('error', (err: any) => {
-      setConnectionError('无法创建房间，代码可能已被占用，请重试。');
-      setIsConnecting(false);
-    });
+        peer.on('error', (err: any) => {
+          console.error(err);
+          setConnectionError('无法创建房间 (PeerJS Error)，请重试或检查网络。');
+          setIsConnecting(false);
+        });
 
-    peer.on('connection', (conn: any) => {
-      conn.on('data', (data: NetworkMessage) => {
-        handleHostMessage(data, conn);
-      });
-      conn.on('open', () => {
-         connectionsRef.current.push(conn);
-      });
-      conn.on('close', () => {
-         connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
-      });
-    });
+        peer.on('connection', (conn: any) => {
+          conn.on('data', (data: NetworkMessage) => {
+            handleHostMessage(data, conn);
+          });
+          conn.on('open', () => {
+             connectionsRef.current.push(conn);
+          });
+          conn.on('close', () => {
+             connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
+          });
+        });
 
-    peerRef.current = peer;
+        peerRef.current = peer;
+    } catch (e) {
+        console.error(e);
+        setConnectionError('初始化失败');
+        setIsConnecting(false);
+    }
   };
 
   // --- HOST: Process Messages ---
@@ -147,8 +166,10 @@ const App: React.FC = () => {
             newState.players = [...newState.players, data.player];
           }
           shouldBroadcast = true;
-          // Send immediate sync to this specific client so they know they are joined
-          conn.send({ type: 'SYNC_STATE', state: newState }); 
+          // IMPORTANT: Send immediate sync to this specific client so they receive the FULL state including their own role if game started
+          if (conn && conn.open) {
+              conn.send({ type: 'SYNC_STATE', state: newState }); 
+          }
           break;
 
         case 'ACTION_CLAIM_SEAT':
@@ -189,74 +210,85 @@ const App: React.FC = () => {
     setIsConnecting(true);
     setConnectionError('');
 
-    const Peer = (window as any).Peer;
-    const peer = new Peer(); 
-
-    peer.on('open', () => {
-       const hostPeerId = `ns-wolf-${roomInput}`;
-       const conn = peer.connect(hostPeerId);
-
-       conn.on('open', () => {
-         console.log('Connected to Host');
-         hostConnRef.current = conn;
-         
-         const pid = crypto.randomUUID();
-         myIdRef.current = pid; // Store ID immediately
-
-         const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
-         setLocalPlayer(newPlayer);
-         conn.send({ type: 'HELLO', player: newPlayer });
-         setIsConnecting(false);
-       });
-
-       conn.on('data', (data: NetworkMessage) => {
-         if (data.type === 'SYNC_STATE') {
-            setGameState(prev => {
-                // CRITICAL FIX: Always update localPlayer from the incoming state using the stable ref ID
-                if (myIdRef.current) {
-                    const meOnServer = data.state.players.find(p => p.id === myIdRef.current);
-                    if (meOnServer) {
-                        // Check if role changed (aka game started)
-                        setLocalPlayer(prevLocal => {
-                            // Only update if something meaningful changed to avoid render loop
-                            if (!prevLocal 
-                                || prevLocal.role !== meOnServer.role 
-                                || prevLocal.seatNumber !== meOnServer.seatNumber
-                                || prevLocal.initialRole !== meOnServer.initialRole) {
-                                return meOnServer;
-                            }
-                            return prevLocal;
-                        });
-                    }
-                }
-                return data.state;
-            });
-         }
-       });
-
-       conn.on('error', (err: any) => {
-         setConnectionError('无法连接房间，请检查房间号。');
-         setIsConnecting(false);
-       });
-       
-       setTimeout(() => {
-           if (!hostConnRef.current?.open) {
-               setConnectionError('连接超时。请确保房主在线。');
-               setIsConnecting(false);
-           }
-       }, 5000);
-    });
-
-    peer.on('error', (err: any) => {
-        setConnectionError('连接服务失败。');
+    if (!(window as any).Peer) {
+        setConnectionError('网络组件未加载。');
         setIsConnecting(false);
-    });
+        return;
+    }
 
-    peerRef.current = peer;
+    try {
+        const Peer = (window as any).Peer;
+        const peer = new Peer(); 
+
+        peer.on('open', () => {
+           const hostPeerId = `ns-wolf-${roomInput}`;
+           const conn = peer.connect(hostPeerId);
+
+           conn.on('open', () => {
+             console.log('Connected to Host');
+             hostConnRef.current = conn;
+             
+             const pid = generateId();
+             myIdRef.current = pid; 
+
+             const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
+             setLocalPlayer(newPlayer);
+             conn.send({ type: 'HELLO', player: newPlayer });
+             setIsConnecting(false);
+           });
+
+           conn.on('data', (data: NetworkMessage) => {
+             if (data.type === 'SYNC_STATE') {
+                setGameState(prev => {
+                    // SYNC LOGIC: Check if my role is updated in the server state
+                    if (myIdRef.current) {
+                        const meOnServer = data.state.players.find(p => p.id === myIdRef.current);
+                        if (meOnServer) {
+                            setLocalPlayer(prevLocal => {
+                                // Update local player if server has more info (e.g. Assigned Role)
+                                if (!prevLocal 
+                                    || prevLocal.role !== meOnServer.role 
+                                    || prevLocal.seatNumber !== meOnServer.seatNumber
+                                    || prevLocal.initialRole !== meOnServer.initialRole) {
+                                    return meOnServer;
+                                }
+                                return prevLocal;
+                            });
+                        }
+                    }
+                    return data.state;
+                });
+             }
+           });
+
+           conn.on('error', (err: any) => {
+             setConnectionError('无法连接房间，请检查房间号。');
+             setIsConnecting(false);
+           });
+           
+           setTimeout(() => {
+               if (!hostConnRef.current?.open) {
+                   setConnectionError('连接超时。请确保房主在线。');
+                   setIsConnecting(false);
+               }
+           }, 5000);
+        });
+
+        peer.on('error', (err: any) => {
+            setConnectionError('连接服务失败 (PeerJS Error)。');
+            setIsConnecting(false);
+        });
+
+        peerRef.current = peer;
+    } catch (e) {
+        console.error(e);
+        setConnectionError('初始化失败');
+        setIsConnecting(false);
+    }
   };
 
 
-  // --- Game Logic Actions (Wrappers) ---
+  // --- Game Logic Actions ---
 
   const claimSeat = (seatNum: number) => {
       if (!localPlayer) return;
@@ -280,8 +312,13 @@ const App: React.FC = () => {
   
   const hostTriggerPhase = (phase: GamePhase, extra?: any) => {
       if (!localPlayer?.isHost) return;
-      const msg: NetworkMessage = { type: 'ACTION_PHASE_CHANGE', phase, ...extra };
-      handleHostMessage(msg, null); 
+      // If triggering Results, we need to calculate them first
+      if (phase === GamePhase.DAY_RESULTS) {
+          processVotingResults();
+      } else {
+          const msg: NetworkMessage = { type: 'ACTION_PHASE_CHANGE', phase, ...extra };
+          handleHostMessage(msg, null); 
+      }
   };
 
   const startGame = async () => {
@@ -300,7 +337,8 @@ const App: React.FC = () => {
         centerCards: shuffled.slice(updatedPlayers.length), 
         currentPhase: GamePhase.ROLE_REVEAL, 
         timer: 5, 
-        votes: {} 
+        votes: {},
+        gameResult: undefined
     };
     
     setGameState(newState);
@@ -308,6 +346,87 @@ const App: React.FC = () => {
 
     const me = updatedPlayers.find(p => p.id === localPlayer.id);
     if (me) setLocalPlayer(me);
+  };
+
+  // --- Result Logic ---
+
+  const processVotingResults = () => {
+      if (!localPlayer?.isHost) return;
+
+      const votes = gameState.votes;
+      const voteCounts: Record<string, number> = {};
+      
+      // Count votes
+      Object.values(votes).forEach(targetId => {
+          voteCounts[targetId] = (voteCounts[targetId] || 0) + 1;
+      });
+
+      // Find Max Votes
+      let maxVotes = 0;
+      Object.values(voteCounts).forEach(c => {
+          if (c > maxVotes) maxVotes = c;
+      });
+
+      // Identify Dead Players 
+      // Rule: The player with the most votes dies. If tie, all tied die.
+      // Must have at least 2 votes to die? Usually for small groups yes, but let's stick to "Max votes dies" for simplicity, or "Max > 1" if we want to be strict.
+      // We will assume simply: Max votes >= 1 dies.
+      
+      const deadPlayerIds: string[] = [];
+      if (maxVotes > 0) {
+          Object.keys(voteCounts).forEach(pid => {
+              if (voteCounts[pid] === maxVotes) {
+                  deadPlayerIds.push(pid);
+              }
+          });
+      }
+
+      // Determine Winners
+      let winners: RoleTeam[] = [];
+      let winningReason = '';
+
+      const deadPlayers = gameState.players.filter(p => deadPlayerIds.includes(p.id));
+      const hasTannerDied = deadPlayers.some(p => p.role === RoleType.TANNER);
+      const hasWerewolfDied = deadPlayers.some(p => p.role === RoleType.WEREWOLF);
+      
+      // Check if any Wolves exist in game
+      const wolfCount = gameState.players.filter(p => p.role === RoleType.WEREWOLF).length;
+
+      if (hasTannerDied) {
+          winners = [RoleTeam.TANNER];
+          winningReason = "皮匠被处决，皮匠获胜！(The Tanner died)";
+      } else if (hasWerewolfDied) {
+          winners = [RoleTeam.VILLAGER];
+          winningReason = "狼人被处决，好人阵营获胜！(A Werewolf died)";
+      } else if (wolfCount === 0 && deadPlayers.length === 0) {
+          // No wolves, no one died -> Villagers win
+           winners = [RoleTeam.VILLAGER];
+           winningReason = "没有狼人且无人死亡，大家睡了个好觉。好人获胜！(No Wolves, No Deaths)";
+      } else if (wolfCount === 0 && deadPlayers.length > 0) {
+           // No wolves, but villager died -> Lose? 
+           // Technically if no wolves, villagers only win if NO ONE dies.
+           winners = [RoleTeam.WEREWOLF]; // Treat as a loss for Village
+           winningReason = "没有狼人但误杀了无辜者，大家输了。(Innocent killed, Village lost)";
+      } else {
+          // Wolves survived (either no one died, or non-wolf/non-tanner died)
+          winners = [RoleTeam.WEREWOLF];
+          winningReason = "狼人潜伏在村庄中幸存，狼人阵营获胜！(Werewolves Survived)";
+      }
+
+      const result: GameResult = {
+          winners,
+          deadPlayerIds,
+          winningReason
+      };
+
+      const newState = {
+          ...gameState,
+          currentPhase: GamePhase.DAY_RESULTS,
+          gameResult: result
+      };
+
+      setGameState(newState);
+      broadcastState(newState);
   };
 
 
@@ -680,6 +799,64 @@ const App: React.FC = () => {
     </div>
   );
 
+  const renderResultsPhase = () => {
+      const result = gameState.gameResult;
+      if (!result) return <div className="p-10">Calculating...</div>;
+
+      const isWinner = result.winners.some(team => {
+          // Simplified check. In reality, check if my team matches winning team.
+          // Since we don't store "My Final Team" explicitly locally easy, we approximate.
+          // But visual is enough.
+          return true; 
+      });
+
+      return (
+          <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20 animate-fade-in-up">
+              <div className="text-center mb-8 mt-4 p-6 bg-paper border-sketch shadow-sketch-lg">
+                  <h2 className="text-2xl font-woodcut text-ink mb-2">结局 (Finale)</h2>
+                  <div className="text-4xl font-bold text-rust mb-4">{result.winningReason}</div>
+                  <div className="text-sm font-mono text-inkDim uppercase tracking-widest border-t border-ink/20 pt-2">
+                      Winning Team: {result.winners.join(', ')}
+                  </div>
+              </div>
+              
+              <div className="w-full max-w-5xl grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6 mb-12">
+                  {gameState.players.map(p => {
+                      const isDead = result.deadPlayerIds.includes(p.id);
+                      return (
+                          <div key={p.id} className="flex flex-col items-center group relative">
+                              {isDead && (
+                                  <div className="absolute top-10 z-20 text-5xl drop-shadow-lg animate-bounce">💀</div>
+                              )}
+                              <PlayingCard 
+                                  role={p.role} 
+                                  isRevealed={true} 
+                                  isSelected={isDead}
+                                  label={`#${p.seatNumber} ${p.name}`}
+                                  size="md"
+                                  disabled={isDead}
+                              />
+                              <div className="mt-2 text-center">
+                                  <div className="font-bold text-ink">{p.name}</div>
+                                  <div className="text-xs text-inkDim">{isDead ? '已处决 (Executed)' : '幸存 (Survived)'}</div>
+                              </div>
+                          </div>
+                      );
+                  })}
+              </div>
+
+               <div className="w-full max-w-2xl text-center mb-10">
+                   <h3 className="text-xl font-woodcut mb-4 text-inkDim">底牌揭示 (Center Cards)</h3>
+                   <div className="flex justify-center gap-4">
+                       {gameState.centerCards.map((c, i) => (
+                           <PlayingCard key={i} role={c} isRevealed={true} label={`Center ${i+1}`} size="sm" />
+                       ))}
+                   </div>
+               </div>
+          </div>
+      );
+  };
+
   const renderGameContent = () => {
     if (gameState.currentPhase === GamePhase.ROLE_REVEAL) return renderRoleReveal();
     if (gameState.currentPhase === GamePhase.NIGHT_ACTIVE && localPlayer) {
@@ -699,10 +876,13 @@ const App: React.FC = () => {
     if (gameState.currentPhase === GamePhase.DAY_VOTING) {
         return renderVotingPhase();
     }
-    if (gameState.currentPhase === GamePhase.GAME_OVER || gameState.currentPhase === GamePhase.DAY_RESULTS) {
-        return <div className="p-10 text-center text-ink font-woodcut text-4xl mt-20">Game Over <br/><span className="text-base text-inkDim font-serif">(Result screen coming soon)</span></div>;
+    if (gameState.currentPhase === GamePhase.DAY_RESULTS) {
+        return renderResultsPhase();
     }
-    // Default safe loading state to prevent glitched Game Over
+    if (gameState.currentPhase === GamePhase.GAME_OVER) {
+        return <div className="p-10 text-center text-ink font-woodcut text-4xl mt-20">Game Over</div>;
+    }
+    // Default safe loading state
     return (
         <div className="flex flex-col items-center justify-center h-full">
             <div className="w-12 h-12 border-4 border-ink border-t-transparent rounded-full animate-spin"></div>
