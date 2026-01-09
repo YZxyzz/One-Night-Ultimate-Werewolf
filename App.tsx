@@ -103,6 +103,13 @@ const App: React.FC = () => {
     setTimeout(() => setInviteCopied(false), 2000);
   };
 
+  const exitRoom = () => {
+      // Reloading ensures a clean break from PeerJS connections and resets state
+      if (window.confirm("确定要退出当前房间吗？(Exit Room?)")) {
+          window.location.reload();
+      }
+  };
+
   // --- HOST: Create Room ---
   const createRoom = () => {
     if (!validateName()) return;
@@ -916,12 +923,17 @@ const App: React.FC = () => {
     <div className="min-h-screen text-ink relative overflow-hidden font-serif selection:bg-rust selection:text-white">
       {/* Top Bar */}
       <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-50 pointer-events-none">
-        <div 
-            className="font-woodcut text-ink text-sm tracking-widest pointer-events-auto border-b-2 border-ink pb-1 ml-2 flex items-center gap-2 cursor-pointer hover:text-rust transition-colors"
-            onClick={copyInvite}
-        >
-          {gameState.roomCode && `RITUAL #${gameState.roomCode}`}
-           {inviteCopied && <span className="text-rust text-xs font-bold animate-pulse ml-2">COPIED</span>}
+        <div className="flex gap-2 pointer-events-auto items-center">
+            {/* EXIT BUTTON - Visible when in a room */}
+            {gameState.roomCode && (
+               <button 
+                  onClick={exitRoom}
+                  className="w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-rust hover:text-white hover:border-rust transition-colors shadow-sketch font-serif font-bold text-lg group"
+                  title="退出房间 / Exit Room"
+               >
+                  <span className="group-hover:-translate-x-0.5 transition-transform">←</span>
+               </button>
+            )}
         </div>
         
         <div className="flex gap-2 pointer-events-auto mr-2">

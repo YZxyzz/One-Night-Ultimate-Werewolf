@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Network School 桌游助手</title>
+    <!-- Polyfill for process to prevent crashes in libraries that assume Node.js environment -->
+    <script>
+      // CRITICAL: Define process.env before any other script runs
+      window.process = {
+        env: { NODE_ENV: 'production' },
+        version: '',
+        versions: {},
+        platform: 'browser'
+      };
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -144,13 +154,13 @@
         filter: contrast(1.2) sepia(0.2) grayscale(0.2); 
       }
     </style>
-  <script type="importmap">
+<script type="importmap">
 {
   "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.35.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react": "https://esm.sh/react@^19.2.3"
   }
 }
 </script>
