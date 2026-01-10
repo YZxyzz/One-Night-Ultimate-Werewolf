@@ -247,6 +247,7 @@ const App: React.FC = () => {
           const pIdx = newState.players.findIndex(p => p.id === data.playerId);
           if (pIdx > -1) {
             const isTaken = newState.players.some(p => p.seatNumber === data.seatNumber);
+            // If seat is free, assign it. This allows switching (previous seat becomes free implicitly)
             if (!isTaken) {
               newState.players[pIdx].seatNumber = data.seatNumber;
               shouldBroadcast = true;
@@ -449,17 +450,28 @@ const App: React.FC = () => {
   const startGame = async () => {
     if (!localPlayer?.isHost) return;
     
+    // 1. Shuffle the deck
     const shuffled = [...projectedDeck].sort(() => 0.5 - Math.random());
     setGameDeck([...shuffled]);
     
-    // Sort players by seat for stability
+    // 2. Sort players by seat number (1, 2, 3...) to ensure alignment with deck distribution
+    // Players without seats (shouldn't happen due to UI check) go to end
     const sortedPlayers = [...gameState.players].sort((a,b) => (a.seatNumber || 99) - (b.seatNumber || 99));
-    const updatedPlayers = sortedPlayers.map((p, idx) => ({ ...p, role: shuffled[idx], initialRole: shuffled[idx] }));
     
+    // 3. Assign Roles: Deck indices 0..N-1 go to players
+    const updatedPlayers = sortedPlayers.map((p, idx) => ({ 
+        ...p, 
+        role: shuffled[idx], 
+        initialRole: shuffled[idx] 
+    }));
+    
+    // 4. Center cards are the remaining cards
+    const centerCards = shuffled.slice(updatedPlayers.length);
+
     const newState = { 
         ...gameState, 
         players: updatedPlayers, 
-        centerCards: shuffled.slice(updatedPlayers.length), 
+        centerCards: centerCards,
         currentPhase: GamePhase.ROLE_REVEAL, 
         timer: 5, 
         votes: {},
@@ -469,6 +481,7 @@ const App: React.FC = () => {
     setGameState(newState);
     broadcastState(newState);
 
+    // Update local player ref immediately
     const me = updatedPlayers.find(p => p.id === localPlayer.id);
     if (me) setLocalPlayer(me);
   };
