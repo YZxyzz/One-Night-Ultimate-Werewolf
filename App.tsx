@@ -56,6 +56,15 @@ const App: React.FC = () => {
   const hostConnRef = useRef<any>(null); 
   const myIdRef = useRef<string | null>(null);
 
+  // --- Auto-fill Room from URL ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+        setRoomInput(roomParam);
+    }
+  }, []);
+
   // --- Utility: Broadcast (Host Only) ---
   const broadcastState = (newState: GameState) => {
     connectionsRef.current.forEach(conn => {
@@ -72,16 +81,41 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Dynamic Deck Logic ---
+  // --- Dynamic Deck Logic (REBALANCED) ---
   const projectedDeck = useMemo(() => {
     const count = Math.max(gameState.settings.playerCount, 3); 
-    const balanceOrder = [
-      RoleType.WEREWOLF, RoleType.WEREWOLF,
-      RoleType.SEER, RoleType.ROBBER, RoleType.TROUBLEMAKER, 
-      RoleType.VILLAGER, RoleType.TANNER, RoleType.INSOMNIAC,
-      RoleType.MASON, RoleType.MASON, RoleType.MINION, RoleType.DRUNK, RoleType.HUNTER
+    
+    // STRATEGY: 
+    // For small games (3-5 players), "Villager" is too weak and makes the game static.
+    // We prioritize "Tanner" (皮匠) to counter "Wolf stacking".
+    // We prioritize "Drunk" (酒鬼) to add chaos/uncertainty.
+    // The deck size is always PlayerCount + 3.
+    
+    const balancedOrder = [
+      // Core 3 (Essential for deduction)
+      RoleType.WEREWOLF, 
+      RoleType.SEER, 
+      RoleType.ROBBER, 
+      
+      // Chaos Layer 1 (Essential for 3 players to prevent Wolf dominance)
+      RoleType.TROUBLEMAKER, 
+      RoleType.WEREWOLF, // 2nd Wolf
+      RoleType.TANNER,   // Tanner prevents Wolves from blindly voting the 3rd person
+      
+      // Layer 2 (4+ players)
+      RoleType.DRUNK,    // Adds center card uncertainty
+      RoleType.INSOMNIAC,// Verification role
+      
+      // Layer 3 (Large games)
+      RoleType.MINION,
+      RoleType.MASON, 
+      RoleType.MASON, 
+      RoleType.HUNTER,
+      RoleType.VILLAGER // Villager is lowest priority now
     ];
-    return balanceOrder.slice(0, count + 3);
+
+    // Slice the exact number needed (Players + 3 Center Cards)
+    return balancedOrder.slice(0, count + 3);
   }, [gameState.settings.playerCount]);
 
   const validateName = () => {
@@ -95,7 +129,9 @@ const App: React.FC = () => {
 
   const copyInvite = () => {
     if (!gameState.roomCode) return;
-    navigator.clipboard.writeText(gameState.roomCode);
+    // Construct full URL with room parameter
+    const url = `${window.location.origin}${window.location.pathname}?room=${gameState.roomCode}`;
+    navigator.clipboard.writeText(url);
     setInviteCopied(true);
     setTimeout(() => setInviteCopied(false), 2000);
   };
@@ -143,7 +179,7 @@ const App: React.FC = () => {
       setGameState(getInitialState());
       setLocalPlayer(null);
       // We keep playerName for user convenience
-      setRoomInput('');
+      // setRoomInput(''); // Keep room input if they want to rejoin same room
       setGameDeck([]);
       setIsConnecting(false);
       setConnectionError('');
@@ -281,6 +317,9 @@ const App: React.FC = () => {
         case 'ACTION_PHASE_CHANGE':
            newState.currentPhase = data.phase;
            if (data.speakerId) newState.speakerId = data.speakerId;
+           // CRITICAL FIX: Reset voteConfirmed locally for Host, and ensure Clients reset via SYNC_STATE detection
+           // However, since voteConfirmed is local, we must rely on the client-side SYNC_STATE hook to reset it.
+           // This logic here just updates the authoritative state.
            shouldBroadcast = true;
            break;
 
@@ -292,7 +331,10 @@ const App: React.FC = () => {
            const actor = newState.players.find(p => p.id === actorId);
            const actorName = actor ? actor.name : 'Unknown';
 
-           if (actionType === 'ROBBER_SWAP') {
+           // BUG FIX: Ensure targets exist before accessing index [0], [1]
+           // AND ensure logging captures the interaction clearly.
+
+           if (actionType === 'ROBBER_SWAP' && targets.length > 0) {
               const robber = newState.players.find(p => p.id === actorId);
               const target = newState.players.find(p => p.id === targets[0]);
               if (robber && target && robber.role && target.role) {
@@ -302,17 +344,22 @@ const App: React.FC = () => {
                  target.role = robberRole;
                  logEntry = `[强盗] ${actorName} 交换了 ${target.name} 的牌`;
               }
-           } else if (actionType === 'TROUBLEMAKER_SWAP') {
+           } else if (actionType === 'TROUBLEMAKER_SWAP' && targets.length > 1) {
+              // Note: Troublemaker swaps TWO OTHER players. The Actor is NOT involved in the role swap.
               const t1 = newState.players.find(p => p.id === targets[0]);
               const t2 = newState.players.find(p => p.id === targets[1]);
+              
               if (t1 && t2 && t1.role && t2.role) {
                  const r1 = t1.role;
                  const r2 = t2.role;
                  t1.role = r2;
                  t2.role = r1;
+                 // Explicitly logging the swap between T1 and T2
                  logEntry = `[捣蛋鬼] ${actorName} 交换了 ${t1.name} 和 ${t2.name} 的牌`;
+              } else {
+                 console.warn("Troublemaker targets invalid:", targets);
               }
-           } else if (actionType === 'DRUNK_SWAP') {
+           } else if (actionType === 'DRUNK_SWAP' && targets.length > 0) {
               const drunk = newState.players.find(p => p.id === actorId);
               const centerIdx = targets[0] as number;
               if (drunk && drunk.role && newState.centerCards[centerIdx]) {
@@ -406,9 +453,13 @@ const App: React.FC = () => {
            conn.on('data', (data: NetworkMessage) => {
              if (data.type === 'SYNC_STATE') {
                 setGameState(prev => {
-                    // Check if we just reset
+                    // CRITICAL: Reset voteConfirmed if entering Voting phase from any other phase
+                    if (prev.currentPhase !== GamePhase.DAY_VOTING && data.state.currentPhase === GamePhase.DAY_VOTING) {
+                        setVoteConfirmed(false);
+                    }
+                    // Also reset on Lobby return
                     if (prev.currentPhase !== GamePhase.LOBBY && data.state.currentPhase === GamePhase.LOBBY) {
-                        setVoteConfirmed(false); // Reset local voting state
+                        setVoteConfirmed(false); 
                     }
 
                     if (myIdRef.current) {
@@ -488,6 +539,11 @@ const App: React.FC = () => {
       } else {
           const msg: NetworkMessage = { type: 'ACTION_PHASE_CHANGE', phase, ...extra };
           handleHostMessage(msg, null); 
+          
+          // Also locally force reset for host
+          if (phase === GamePhase.DAY_VOTING) {
+              setVoteConfirmed(false);
+          }
       }
   };
 
@@ -518,13 +574,15 @@ const App: React.FC = () => {
   const startGame = async () => {
     if (!localPlayer?.isHost) return;
     
+    // Filter out any ghost players who haven't claimed a seat
+    const validPlayers = gameState.players.filter(p => p.seatNumber !== null);
+    
     // 1. Shuffle the deck
     const shuffled = [...projectedDeck].sort(() => 0.5 - Math.random());
     setGameDeck([...shuffled]);
     
     // 2. Sort players by seat number (1, 2, 3...) to ensure alignment with deck distribution
-    // Players without seats (shouldn't happen due to UI check) go to end
-    const sortedPlayers = [...gameState.players].sort((a,b) => (a.seatNumber || 99) - (b.seatNumber || 99));
+    const sortedPlayers = [...validPlayers].sort((a,b) => (a.seatNumber!) - (b.seatNumber!));
     
     // 3. Assign Roles: Deck indices 0..N-1 go to players
     const updatedPlayers = sortedPlayers.map((p, idx) => ({ 
@@ -641,6 +699,7 @@ const App: React.FC = () => {
 
   // --- Timers & Phase Transitions (Host Authority) ---
   
+  // 1. Role Reveal Timer
   useEffect(() => {
     if (!localPlayer?.isHost) return;
 
@@ -663,17 +722,51 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [gameState.currentPhase, localPlayer?.isHost]);
 
+  // 2. Night Intro -> Night Active
   useEffect(() => {
     if (!localPlayer?.isHost) return;
 
     if (gameState.currentPhase === GamePhase.NIGHT_INTRO) {
       setTimeout(() => {
-         const nextState = { ...gameState, currentPhase: GamePhase.NIGHT_ACTIVE, currentNightRoleIndex: 0 };
+         // Initialize timer for first role
+         const firstRole = NIGHT_SEQUENCE[0];
+         const initialTime = (firstRole === RoleType.WEREWOLF || firstRole === RoleType.SEER) ? 25 : 15;
+         
+         const nextState = { 
+             ...gameState, 
+             currentPhase: GamePhase.NIGHT_ACTIVE, 
+             currentNightRoleIndex: 0,
+             timer: initialTime 
+         };
          setGameState(nextState);
          broadcastState(nextState);
       }, 3000);
     }
   }, [gameState.currentPhase, localPlayer?.isHost]);
+
+  // 3. Night Active Global Timer (Host Only)
+  useEffect(() => {
+    if (!localPlayer?.isHost) return;
+    if (gameState.currentPhase !== GamePhase.NIGHT_ACTIVE) return;
+
+    const interval = setInterval(() => {
+        setGameState(prev => {
+            if (prev.timer <= 1) {
+               // Time is up, advance night phase triggers via effect below or implicit logic
+               // For simplicity, we trigger next role logic here
+               advanceNightPhase();
+               return prev; // State update handled by advanceNightPhase
+            }
+            const nextState = { ...prev, timer: prev.timer - 1 };
+            // Broadcast every second during night to keep sync
+            broadcastState(nextState);
+            return nextState;
+        });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [gameState.currentPhase, gameState.currentNightRoleIndex, localPlayer?.isHost]);
+
 
   // --- Auto Vote Completion ---
   useEffect(() => {
@@ -690,8 +783,9 @@ const App: React.FC = () => {
 
   // Host Action: Advance Night
   const advanceNightPhase = () => {
-    if (!localPlayer?.isHost) return;
-
+    // Note: accessing state via closure here can be stale if called from interval.
+    // Ideally this logic should be inside setGameState updater, but for readability:
+    
     setGameState(prev => {
       const nextIndex = prev.currentNightRoleIndex + 1;
       let nextState = { ...prev };
@@ -707,7 +801,15 @@ const App: React.FC = () => {
               speakerId: speakerId
           };
       } else {
-          nextState = { ...prev, currentNightRoleIndex: nextIndex };
+          // Setup timer for next role
+          const nextRole = NIGHT_SEQUENCE[nextIndex];
+          const nextTime = (nextRole === RoleType.WEREWOLF || nextRole === RoleType.SEER) ? 25 : 15;
+          
+          nextState = { 
+              ...prev, 
+              currentNightRoleIndex: nextIndex,
+              timer: nextTime 
+          };
       }
       
       broadcastState(nextState);
@@ -810,18 +912,27 @@ const App: React.FC = () => {
                       >
                           {isOccupied ? (
                               <>
+                                {/* 1. SEAT NUMBER BADGE (New) */}
+                                <div className="absolute -top-1 -right-1 w-5 h-5 bg-paperDark border border-ink rounded-full flex items-center justify-center text-[10px] font-bold z-30 text-ink shadow-sm cursor-default">
+                                    {seat.id}
+                                </div>
+
                                 <span className="font-woodcut text-2xl leading-none drop-shadow-md">{player.name.charAt(0)}</span>
                                 {/* Improved Name Label: Wider, breaks word if needed, ensures visibility */}
-                                <div className="absolute -bottom-6 w-24 text-center">
-                                    <span className="text-[10px] uppercase font-bold bg-paper border border-ink text-ink px-1.5 py-0.5 rounded shadow-sm break-words leading-tight block">
-                                        {player.id === 'host' ? '房主' : (isMe ? `${player.name} (我)` : player.name)}
+                                <div className="absolute -bottom-8 w-28 text-center flex flex-col items-center z-40 pointer-events-none">
+                                    <span className="text-[10px] uppercase font-bold bg-paper border border-ink text-ink px-2 py-0.5 rounded shadow-sm break-words leading-tight block max-w-full">
+                                        {isMe ? `${player.name} (Me)` : player.name}
                                     </span>
+                                    {player.isHost && (
+                                        <span className="text-[8px] bg-rust text-white px-1.5 py-px rounded-full mt-0.5 shadow-sm font-bold tracking-wider border border-white animate-pulse-slow">
+                                            房主 HOST
+                                        </span>
+                                    )}
                                 </div>
                               </>
                           ) : (
                               <span className="font-woodcut text-sm">{seat.id}号</span>
                           )}
-                          {player?.isHost && <div className="absolute -top-1 -right-1 bg-rust text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center border border-paper z-30">H</div>}
                       </button>
                   );
               })}
@@ -829,7 +940,14 @@ const App: React.FC = () => {
       );
   };
 
-  const renderLobby = () => (
+  const renderLobby = () => {
+    // Calculate seated count for Start Logic
+    const seatedCount = gameState.players.filter(p => p.seatNumber !== null).length;
+    const totalSeats = gameState.settings.playerCount;
+    // Condition: Game can start if seated count equals target, regardless of extra ghosts
+    const canStart = seatedCount === totalSeats;
+
+    return (
     <div className="flex flex-col items-center justify-center min-h-screen p-6 w-full text-ink">
       <div className="text-center mb-6 animate-float">
         <h1 className="text-6xl font-woodcut text-ink mb-1 tracking-tight">Network School</h1>
@@ -905,14 +1023,12 @@ const App: React.FC = () => {
                     fullWidth 
                     onClick={startGame} 
                     className="mt-4 shadow-sketch-lg" 
-                    disabled={gameState.players.length < gameState.settings.playerCount || !gameState.players.every(p => p.seatNumber !== null)}
+                    disabled={!canStart}
                 >
                      <span className="text-2xl">开启今夜 (Begin)</span>
-                     {gameState.players.length < gameState.settings.playerCount ? (
-                        <span className="text-xs">等待人员加入... (Waiting for players)</span>
-                     ) : !gameState.players.every(p => p.seatNumber !== null) ? (
-                        <span className="text-xs">等待全员入座... (Waiting for seats)</span>
-                     ) : null}
+                     {!canStart && (
+                        <span className="text-xs">等待全员入座... ({seatedCount}/{totalSeats})</span>
+                     )}
                 </Button>
               ) : (
                 <div className="text-center p-4"><p className="animate-pulse font-woodcut text-xl text-ink">等待房主...</p><p className="text-xs font-serif italic text-inkLight">Waiting for Host to begin ritual...</p></div>
@@ -921,7 +1037,8 @@ const App: React.FC = () => {
         )}
       </div>
     </div>
-  );
+    );
+  };
 
   const renderRoleReveal = () => (
      <div className="flex flex-col items-center justify-center h-full p-4">
@@ -993,9 +1110,25 @@ const App: React.FC = () => {
     </div>
   );
 
-  const renderVotingPhase = () => (
-    <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20">
-        <div className="text-center mb-8 mt-4">
+  const renderVotingPhase = () => {
+    // Determine my current vote selection
+    const myVoteTargetId = gameState.votes[localPlayer?.id || ''];
+    const myVoteTarget = gameState.players.find(p => p.id === myVoteTargetId);
+
+    return (
+      <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20 relative">
+        {/* Identity Banner */}
+        <div className="w-full bg-paperDark border-y border-ink/20 py-2 px-4 mb-4 flex justify-between items-center shadow-sm">
+            <span className="text-xs font-bold uppercase tracking-widest text-inkDim">当前操作账号 (Current Identity)</span>
+            <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full text-white text-xs flex items-center justify-center font-bold" style={{backgroundColor: localPlayer?.color}}>
+                    {localPlayer?.name.charAt(0)}
+                </div>
+                <span className="font-woodcut text-lg text-ink">{localPlayer?.name}</span>
+            </div>
+        </div>
+
+        <div className="text-center mb-8">
             <h2 className="text-4xl font-woodcut text-rust">审判时刻</h2>
             <p className="font-antique italic text-inkLight text-sm">Point your finger. Choose wisely.</p>
         </div>
@@ -1015,8 +1148,8 @@ const App: React.FC = () => {
                         className={`
                             relative flex flex-col items-center p-4 transition-all cursor-pointer bg-paper
                             border-2 ${isSelectedByMe ? 'border-rust shadow-sketch scale-105' : 'border-ink hover:-translate-y-1 hover:shadow-sketch'}
-                            ${isMe ? 'opacity-50 cursor-not-allowed border-dashed' : ''}
-                            ${voteConfirmed ? 'pointer-events-none grayscale opacity-80' : ''}
+                            ${isMe ? 'opacity-100 border-dashed bg-ink/5' : ''} 
+                            ${voteConfirmed && !isSelectedByMe ? 'opacity-50 grayscale' : ''}
                         `}
                         style={{ borderRadius: '255px 15px 225px 15px / 15px 225px 15px 255px' }}
                     >
@@ -1031,6 +1164,13 @@ const App: React.FC = () => {
                             {p.seatNumber}
                         </div>
                         
+                        {/* Distinct "ME" badge */}
+                        {isMe && (
+                             <div className="absolute -top-2 left-1/2 -translate-x-1/2 bg-ink text-white px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-widest z-20">
+                                 我 (ME)
+                             </div>
+                        )}
+
                         {isSelectedByMe && (
                             <div className="absolute -top-3 -right-3 bg-rust text-white rounded-full w-8 h-8 flex items-center justify-center font-bold border-2 border-paper shadow-sm z-10 animate-bounce">
                                 ⚔
@@ -1043,30 +1183,41 @@ const App: React.FC = () => {
         
         <div className="fixed bottom-6 w-full max-w-md px-6 z-20 space-y-4">
             {!voteConfirmed ? (
-                <Button fullWidth variant="danger" 
-                    disabled={!gameState.votes[localPlayer?.id || '']}
-                    onClick={() => setVoteConfirmed(true)}
-                >
-                     <span className="text-xl">确认投票 (Confirm)</span>
-                </Button>
+                <div className="space-y-2">
+                     {/* Pre-confirmation target display */}
+                    <div className="text-center">
+                        <span className="text-xs text-inkDim uppercase tracking-widest mr-2">准备投给 (Targeting):</span>
+                        <span className="font-woodcut text-xl text-rust">
+                            {myVoteTarget ? myVoteTarget.name : "..."}
+                        </span>
+                    </div>
+                    <Button fullWidth variant="danger" 
+                        disabled={!myVoteTarget}
+                        onClick={() => setVoteConfirmed(true)}
+                    >
+                        <span className="text-xl">确认投票 (Confirm)</span>
+                    </Button>
+                </div>
             ) : (
                 <div className="text-center p-4 bg-paper border-sketch">
                     <p className="font-woodcut text-rust text-xl">已锁定 (Locked)</p>
+                    <p className="text-sm text-ink mb-1">你投给了: <strong>{myVoteTarget?.name}</strong></p>
                     <p className="text-xs text-inkDim">
                         {Object.keys(gameState.votes).length} / {gameState.players.length} 已投票...
                     </p>
                 </div>
             )}
             
-            {/* Host button backup in case auto-trigger fails or for explicit control */}
+            {/* Host button backup */}
             {localPlayer?.isHost && Object.keys(gameState.votes).length !== gameState.players.length && (
                 <div className="pt-4 border-t border-ink/20 text-center">
                     <p className="text-xs mb-2 text-inkDim">等待全员投票自动结算...</p>
                 </div>
             )}
         </div>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderResultsPhase = () => {
       const result = gameState.gameResult;
@@ -1083,32 +1234,63 @@ const App: React.FC = () => {
                   </div>
               </div>
               
-              {/* Players Grid: Final Roles */}
-              <div className="w-full max-w-5xl grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6 mb-12">
+              {/* === REDESIGNED: IDENTITY CHANGES LIST === */}
+              <div className="w-full max-w-2xl space-y-4 mb-10">
+                  <h3 className="text-xl font-woodcut text-center mb-4 text-inkDim border-b border-ink/10 pb-2">身份揭示 (Identity Reveal)</h3>
+                  
                   {gameState.players.map(p => {
                       const isDead = result.deadPlayerIds.includes(p.id);
+                      const isWinner = result.winners.includes(ROLES[p.role!].team);
+                      const roleChanged = p.initialRole !== p.role;
+                      
                       return (
-                          <div key={p.id} className="flex flex-col items-center group relative">
-                              {isDead && (
-                                  <div className="absolute top-10 z-20 text-5xl drop-shadow-lg animate-bounce">💀</div>
-                              )}
-                              <PlayingCard 
-                                  role={p.role} 
-                                  isRevealed={true} 
-                                  isSelected={isDead}
-                                  label={`#${p.seatNumber} ${p.name}`}
-                                  size="md"
-                                  disabled={isDead}
-                              />
-                              <div className="mt-2 text-center">
-                                  <div 
-                                      className="inline-flex items-center justify-center px-3 py-1 rounded-full text-xs font-bold text-white mb-1"
+                          <div key={p.id} className="flex items-center justify-between bg-paper border-sketch p-3 relative overflow-hidden group">
+                              {/* Left: Player Info */}
+                              <div className="flex items-center gap-3 w-1/3">
+                                   <div 
+                                      className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white shadow-sm flex-none"
                                       style={{ backgroundColor: p.color }}
                                   >
                                       {p.name.charAt(0)}
                                   </div>
-                                  <div className="font-bold text-ink">{p.name}</div>
-                                  <div className="text-xs text-inkDim">{isDead ? '已处决 (Executed)' : '幸存 (Survived)'}</div>
+                                  <div className="flex flex-col overflow-hidden">
+                                      <span className="font-woodcut text-ink text-base truncate">{p.name}</span>
+                                      <span className="text-[10px] text-inkDim uppercase tracking-wider font-bold">Seat {p.seatNumber}</span>
+                                  </div>
+                              </div>
+
+                              {/* Center: Transformation */}
+                              <div className="flex items-center justify-center gap-2 flex-1">
+                                  {/* Initial */}
+                                  <div className="flex flex-col items-center opacity-70 scale-90">
+                                      <span className="text-[10px] uppercase font-bold text-inkDim mb-0.5">Start</span>
+                                      <div className="px-2 py-1 bg-ink/5 border border-ink/20 rounded text-xs font-serif font-bold whitespace-nowrap">
+                                          {ROLES[p.initialRole!].name.split('/')[0]}
+                                      </div>
+                                  </div>
+                                  
+                                  {/* Arrow */}
+                                  <div className="text-rust font-bold text-lg px-1">→</div>
+
+                                  {/* Final */}
+                                  <div className="flex flex-col items-center">
+                                      <span className="text-[10px] uppercase font-bold text-inkDim mb-0.5">Final</span>
+                                      <div className={`px-2 py-1 border rounded text-xs font-serif font-bold whitespace-nowrap shadow-sm ${roleChanged ? 'bg-white border-rust text-rust' : 'bg-ink text-white border-ink'}`}>
+                                          {ROLES[p.role!].name.split('/')[0]}
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {/* Right: Status Badge */}
+                              <div className="w-1/4 flex flex-col items-end justify-center pl-2">
+                                  {isDead && (
+                                      <span className="text-[10px] font-bold bg-black text-white px-2 py-0.5 rounded-full mb-1 animate-pulse">
+                                          💀 DIED
+                                      </span>
+                                  )}
+                                  <span className={`text-xs font-bold border px-2 py-0.5 rounded ${isWinner ? 'border-green-800 text-green-900 bg-green-100' : 'border-red-800 text-red-900 bg-red-100'}`}>
+                                      {isWinner ? "WIN" : "LOSE"}
+                                  </span>
                               </div>
                           </div>
                       );
@@ -1116,8 +1298,8 @@ const App: React.FC = () => {
               </div>
 
                {/* Center Cards */}
-               <div className="w-full max-w-2xl text-center mb-10">
-                   <h3 className="text-xl font-woodcut mb-4 text-inkDim">底牌揭示 (Center Cards)</h3>
+               <div className="w-full max-w-2xl text-center mb-10 bg-paperDark border-sketch p-4">
+                   <h3 className="text-sm font-woodcut mb-4 text-inkDim uppercase tracking-widest">Center Cards</h3>
                    <div className="flex justify-center gap-4">
                        {gameState.centerCards.map((c, i) => (
                            <PlayingCard key={i} role={c} isRevealed={true} label={`Center ${i+1}`} size="sm" />
@@ -1125,52 +1307,20 @@ const App: React.FC = () => {
                    </div>
                </div>
                
-               {/* --- GAME REVIEW SECTION --- */}
-               <div className="w-full max-w-4xl bg-paperDark border-sketch p-6 mb-20 space-y-6">
-                   <h3 className="text-2xl font-woodcut text-center border-b border-ink/10 pb-4">复盘 (Review)</h3>
-                   
-                   {/* 1. Identity Changes */}
-                   <div>
-                       <h4 className="font-bold text-lg mb-4 text-ink">身份流变 (Identity Changes)</h4>
-                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {gameState.players.map(p => {
-                              const changed = p.initialRole !== p.role;
-                              return (
-                                  <div key={p.id} className={`flex justify-between items-center p-3 rounded border ${changed ? 'bg-paper border-rust' : 'bg-paper/50 border-ink/10'}`}>
-                                      <div className="flex items-center gap-2">
-                                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white" style={{backgroundColor: p.color}}>{p.seatNumber}</div>
-                                          <span>{p.name}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2 text-sm">
-                                          <span className={changed ? 'line-through opacity-50' : 'font-bold'}>{ROLES[p.initialRole!].name.split('/')[0]}</span>
-                                          {changed && (
-                                              <>
-                                                <span>→</span>
-                                                <span className="font-bold text-rust">{ROLES[p.role!].name.split('/')[0]}</span>
-                                              </>
-                                          )}
-                                      </div>
-                                  </div>
-                              );
-                          })}
-                       </div>
-                   </div>
-
-                   {/* 2. Night Log */}
-                   <div>
-                       <h4 className="font-bold text-lg mb-4 text-ink">时间回溯 (Timeline)</h4>
-                       <div className="bg-paper p-4 rounded border border-ink/10 space-y-2 text-sm font-mono h-48 overflow-y-auto custom-scrollbar">
-                           {gameState.log.length > 0 ? (
-                               gameState.log.map((entry, i) => (
-                                   <div key={i} className="border-b border-dashed border-ink/10 pb-1 last:border-0">
-                                       <span className="opacity-50 mr-3">[{i+1}]</span>
-                                       {entry}
-                                   </div>
-                               ))
-                           ) : (
-                               <div className="text-center italic opacity-50 py-4">平静的夜晚，没有行动发生...</div>
-                           )}
-                       </div>
+               {/* --- TIMELINE (LOG) --- */}
+               <div className="w-full max-w-4xl p-6 mb-20 space-y-4">
+                   <h3 className="text-xl font-woodcut text-center text-inkDim uppercase tracking-widest border-b border-ink/10 pb-2">Time Rewind (Log)</h3>
+                   <div className="bg-paper p-4 rounded border-2 border-dashed border-ink/20 space-y-2 text-sm font-mono h-48 overflow-y-auto custom-scrollbar">
+                       {gameState.log.length > 0 ? (
+                           gameState.log.map((entry, i) => (
+                               <div key={i} className="border-b border-dashed border-ink/10 pb-1 last:border-0 flex gap-2">
+                                   <span className="opacity-40 select-none">[{String(i+1).padStart(2, '0')}]</span>
+                                   <span>{entry}</span>
+                               </div>
+                           ))
+                       ) : (
+                           <div className="text-center italic opacity-50 py-4">平静的夜晚，没有行动发生...</div>
+                       )}
                    </div>
                </div>
                
@@ -1192,8 +1342,8 @@ const App: React.FC = () => {
         <NightPhase 
           gameState={gameState} 
           currentPlayer={localPlayer}
-          onPhaseComplete={() => {}}
-          onGodSpeechComplete={advanceNightPhase}
+          onPhaseComplete={() => {}} // Now handled by App.tsx timer broadcast
+          onGodSpeechComplete={() => {}} // Handled by App.tsx logic
           onAction={handleNightAction}
         />
       );
