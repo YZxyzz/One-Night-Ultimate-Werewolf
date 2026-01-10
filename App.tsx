@@ -7,20 +7,13 @@ import RuleBook from './components/game/RuleBook';
 import PlayingCard from './components/ui/PlayingCard'; 
 import { soundService } from './services/soundService';
 
-// --- Safe ID Generator (Fixes Vercel Crash) ---
-// crypto.randomUUID() causes crashes in non-secure contexts (http) or some environments.
+// --- Safe ID Generator ---
 const generateId = () => {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
-// P2P Message Types
-type NetworkMessage = 
-  | { type: 'HELLO'; player: Player } 
-  | { type: 'SYNC_STATE'; state: GameState } 
-  | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
-  | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
-  | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
-  | { type: 'ACTION_GAME_OVER'; result: GameResult }; 
+// P2P Message Types defined in types.ts now includes ACTION_NIGHT_ACTION
+import { NetworkMessage } from './types';
 
 const getInitialState = (): GameState => ({
   roomCode: '',
@@ -50,13 +43,12 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState('');
   const [voteConfirmed, setVoteConfirmed] = useState(false); 
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [showExitDialog, setShowExitDialog] = useState(false);
 
   // P2P Refs
   const peerRef = useRef<any>(null);
   const connectionsRef = useRef<any[]>([]); 
   const hostConnRef = useRef<any>(null); 
-  
-  // CRITICAL: Keep track of my ID in a ref so callbacks can always access the stable ID
   const myIdRef = useRef<string | null>(null);
 
   // --- Utility: Broadcast (Host Only) ---
@@ -103,21 +95,77 @@ const App: React.FC = () => {
     setTimeout(() => setInviteCopied(false), 2000);
   };
 
-  const exitRoom = () => {
-      // Reloading ensures a clean break from PeerJS connections and resets state
-      if (window.confirm("确定要退出当前房间吗？(Exit Room?)")) {
-          window.location.reload();
+  // --- Enhanced Back/Exit Handler ---
+  const handleBack = (e?: React.MouseEvent) => {
+      if (e) {
+          e.stopPropagation();
+          e.preventDefault();
+      }
+      
+      // 1. If currently connecting, cancel immediately (no dialog needed)
+      if (isConnecting) {
+          setIsConnecting(false);
+          setConnectionError('');
+          if (peerRef.current) {
+              try { peerRef.current.destroy(); } catch(err) { console.error(err); }
+              peerRef.current = null;
+          }
+          return;
+      }
+
+      // 2. If in a room (Host or Client), SHOW CUSTOM DIALOG
+      // We do NOT use window.confirm as it can be unreliable in some embedded views/browsers
+      if (gameState.roomCode) {
+          setShowExitDialog(true);
+      }
+  };
+
+  // --- SOFT RESET (Fix for Platform 404 Error) ---
+  const confirmExit = () => {
+      setShowExitDialog(false);
+
+      // 1. Clean up Network / Peer
+      if (peerRef.current) {
+          try { peerRef.current.destroy(); } catch(err) { console.error("Peer destroy error", err); }
+          peerRef.current = null;
+      }
+      connectionsRef.current = [];
+      hostConnRef.current = null;
+      myIdRef.current = null;
+      
+      // 2. Soft Reset State (Do NOT use window.location.reload())
+      // This manually resets the app to the initial Lobby state without triggering a browser refresh.
+      setGameState(getInitialState());
+      setLocalPlayer(null);
+      // We keep playerName for user convenience
+      setRoomInput('');
+      setGameDeck([]);
+      setIsConnecting(false);
+      setConnectionError('');
+      setVoteConfirmed(false);
+      setInviteCopied(false);
+      setIsRuleBookOpen(false);
+
+      // 3. Optional: Clean URL visually if needed (safe pushState)
+      try {
+        const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+        window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+      } catch (e) {
+        // Ignore history errors in sandboxed iframes
       }
   };
 
   // --- HOST: Create Room ---
-  const createRoom = () => {
+  const createRoom = async () => {
     if (!validateName()) return;
+    
+    // IMPORTANT: Audio Context must be resumed on user gesture
+    await soundService.init();
+
     setIsConnecting(true);
     
-    // Check if Peer is loaded
     if (!(window as any).Peer) {
-        setConnectionError('网络组件未加载，请刷新页面重试。');
+        setConnectionError('网络组件未加载 (PeerJS missing)。');
         setIsConnecting(false);
         return;
     }
@@ -125,14 +173,15 @@ const App: React.FC = () => {
     const code = Math.floor(1000 + Math.random() * 9000).toString();
     const peerId = `ns-wolf-${code}`; 
     const pid = generateId();
-    myIdRef.current = pid; // Store ID immediately
+    myIdRef.current = pid;
     
     try {
         const Peer = (window as any).Peer;
         const peer = new Peer(peerId);
 
         peer.on('open', (id: string) => {
-          const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: 1, role: null, initialRole: null, isHost: true };
+          // MODIFIED: Host starts with seatNumber: null to allow manual selection
+          const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: true };
           setLocalPlayer(newPlayer);
           setGameState({ 
               ...getInitialState(), 
@@ -145,7 +194,12 @@ const App: React.FC = () => {
 
         peer.on('error', (err: any) => {
           console.error(err);
-          setConnectionError('无法创建房间，代码可能已被占用或网络受限。');
+          if (err.type === 'unavailable-id') {
+             // Retry once with new ID if taken (rare)
+             setConnectionError('房间号冲突，请重试。');
+          } else {
+             setConnectionError('创建房间失败，请检查网络。');
+          }
           setIsConnecting(false);
         });
 
@@ -155,6 +209,8 @@ const App: React.FC = () => {
           });
           conn.on('open', () => {
              connectionsRef.current.push(conn);
+             // Sync immediate state to new player
+             conn.send({ type: 'SYNC_STATE', state: gameState });
           });
           conn.on('close', () => {
              connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
@@ -164,7 +220,7 @@ const App: React.FC = () => {
         peerRef.current = peer;
     } catch (e) {
         console.error(e);
-        setConnectionError('初始化失败');
+        setConnectionError('初始化失败 (Init Failed)');
         setIsConnecting(false);
     }
   };
@@ -182,7 +238,6 @@ const App: React.FC = () => {
             newState.players = [...newState.players, data.player];
           }
           shouldBroadcast = true;
-          // IMPORTANT: Send immediate sync to this specific client so they receive the FULL state including their own role if game started
           if (conn && conn.open) {
               conn.send({ type: 'SYNC_STATE', state: newState }); 
           }
@@ -209,6 +264,41 @@ const App: React.FC = () => {
            if (data.speakerId) newState.speakerId = data.speakerId;
            shouldBroadcast = true;
            break;
+
+        case 'ACTION_NIGHT_ACTION':
+           const nightActionData = data as Extract<NetworkMessage, { type: 'ACTION_NIGHT_ACTION' }>;
+           const { actionType, actorId, targets } = nightActionData;
+           
+           if (actionType === 'ROBBER_SWAP') {
+              const robber = newState.players.find(p => p.id === actorId);
+              const target = newState.players.find(p => p.id === targets[0]);
+              if (robber && target && robber.role && target.role) {
+                 const robberRole = robber.role;
+                 const targetRole = target.role;
+                 robber.role = targetRole;
+                 target.role = robberRole;
+              }
+           } else if (actionType === 'TROUBLEMAKER_SWAP') {
+              const t1 = newState.players.find(p => p.id === targets[0]);
+              const t2 = newState.players.find(p => p.id === targets[1]);
+              if (t1 && t2 && t1.role && t2.role) {
+                 const r1 = t1.role;
+                 const r2 = t2.role;
+                 t1.role = r2;
+                 t2.role = r1;
+              }
+           } else if (actionType === 'DRUNK_SWAP') {
+              const drunk = newState.players.find(p => p.id === actorId);
+              const centerIdx = targets[0] as number;
+              if (drunk && drunk.role && newState.centerCards[centerIdx]) {
+                 const drunkRole = drunk.role;
+                 const centerRole = newState.centerCards[centerIdx];
+                 drunk.role = centerRole;
+                 newState.centerCards[centerIdx] = drunkRole;
+              }
+           }
+           shouldBroadcast = true;
+           break;
       }
 
       if (shouldBroadcast) {
@@ -219,10 +309,13 @@ const App: React.FC = () => {
   };
 
   // --- CLIENT: Join Room ---
-  const joinRoom = () => {
+  const joinRoom = async () => {
     if (!validateName()) return;
     if (!roomInput) return;
     
+    // IMPORTANT: Audio Context must be resumed on user gesture
+    await soundService.init();
+
     setIsConnecting(true);
     setConnectionError('');
 
@@ -256,12 +349,11 @@ const App: React.FC = () => {
            conn.on('data', (data: NetworkMessage) => {
              if (data.type === 'SYNC_STATE') {
                 setGameState(prev => {
-                    // SYNC LOGIC: Check if my role is updated in the server state
                     if (myIdRef.current) {
                         const meOnServer = data.state.players.find(p => p.id === myIdRef.current);
                         if (meOnServer) {
                             setLocalPlayer(prevLocal => {
-                                // Update local player if server has more info (e.g. Assigned Role)
+                                // Sync local knowledge with server truth where allowed
                                 if (!prevLocal 
                                     || prevLocal.role !== meOnServer.role 
                                     || prevLocal.seatNumber !== meOnServer.seatNumber
@@ -328,7 +420,6 @@ const App: React.FC = () => {
   
   const hostTriggerPhase = (phase: GamePhase, extra?: any) => {
       if (!localPlayer?.isHost) return;
-      // If triggering Results, we need to calculate them first
       if (phase === GamePhase.DAY_RESULTS) {
           processVotingResults();
       } else {
@@ -337,13 +428,31 @@ const App: React.FC = () => {
       }
   };
 
+  // --- Night Action Handler ---
+  const handleNightAction = (actionType: string, targets: (string | number)[]) => {
+      if (!localPlayer) return;
+      
+      const msg: NetworkMessage = {
+          type: 'ACTION_NIGHT_ACTION',
+          actionType,
+          actorId: localPlayer.id,
+          targets
+      };
+
+      if (localPlayer.isHost) {
+          handleHostMessage(msg, null);
+      } else {
+          sendToHost(msg);
+      }
+  };
+
   const startGame = async () => {
     if (!localPlayer?.isHost) return;
     
-    await soundService.init();
     const shuffled = [...projectedDeck].sort(() => 0.5 - Math.random());
     setGameDeck([...shuffled]);
     
+    // Sort players by seat for stability
     const sortedPlayers = [...gameState.players].sort((a,b) => (a.seatNumber || 99) - (b.seatNumber || 99));
     const updatedPlayers = sortedPlayers.map((p, idx) => ({ ...p, role: shuffled[idx], initialRole: shuffled[idx] }));
     
@@ -372,18 +481,17 @@ const App: React.FC = () => {
       const votes = gameState.votes;
       const voteCounts: Record<string, number> = {};
       
-      // Count votes
       Object.values(votes).forEach(targetId => {
-          voteCounts[targetId] = (voteCounts[targetId] || 0) + 1;
+          // Explicitly cast to string to prevent index type errors
+          const tid = targetId as string;
+          voteCounts[tid] = (voteCounts[tid] || 0) + 1;
       });
 
-      // Find Max Votes
       let maxVotes = 0;
       Object.values(voteCounts).forEach(c => {
           if (c > maxVotes) maxVotes = c;
       });
 
-      // Identify Dead Players 
       const deadPlayerIds: string[] = [];
       if (maxVotes > 0) {
           Object.keys(voteCounts).forEach(pid => {
@@ -392,8 +500,20 @@ const App: React.FC = () => {
               }
           });
       }
+      
+      // HUNTER LOGIC
+      const initialDead = [...deadPlayerIds];
+      initialDead.forEach(deadId => {
+          const p = gameState.players.find(pl => pl.id === deadId);
+          if (p && p.role === RoleType.HUNTER) {
+              // Cast deadId to string to fix "Type 'unknown' cannot be used as an index type" error
+              const hunterTarget = gameState.votes[deadId as string];
+              if (hunterTarget && !deadPlayerIds.includes(hunterTarget)) {
+                  deadPlayerIds.push(hunterTarget);
+              }
+          }
+      });
 
-      // Determine Winners
       let winners: RoleTeam[] = [];
       let winningReason = '';
 
@@ -401,7 +521,6 @@ const App: React.FC = () => {
       const hasTannerDied = deadPlayers.some(p => p.role === RoleType.TANNER);
       const hasWerewolfDied = deadPlayers.some(p => p.role === RoleType.WEREWOLF);
       
-      // Check if any Wolves exist in game
       const wolfCount = gameState.players.filter(p => p.role === RoleType.WEREWOLF).length;
 
       if (hasTannerDied) {
@@ -414,7 +533,7 @@ const App: React.FC = () => {
            winners = [RoleTeam.VILLAGER];
            winningReason = "没有狼人且无人死亡，好人获胜！(No Wolves, No Deaths)";
       } else if (wolfCount === 0 && deadPlayers.length > 0) {
-           winners = [RoleTeam.WEREWOLF]; // Treat as a loss for Village
+           winners = [RoleTeam.WEREWOLF]; 
            winningReason = "没有狼人但误杀了无辜者，大家输了。(Innocent killed, Village lost)";
       } else {
           winners = [RoleTeam.WEREWOLF];
@@ -501,11 +620,6 @@ const App: React.FC = () => {
       return nextState;
     });
   };
-  
-  const handleNightAction = (actionType: string, targetIds: string[]) => {
-       // Placeholder for night logic
-  };
-
 
   // --- Render Components ---
 
@@ -578,7 +692,11 @@ const App: React.FC = () => {
                   const player = gameState.players.find(p => p.seatNumber === seat.id);
                   const isOccupied = !!player;
                   const isMe = player?.id === localPlayer?.id;
-                  const canSit = !isOccupied && localPlayer?.seatNumber === null;
+                  
+                  // MODIFIED: Allow switching seats if the target seat is not occupied
+                  // Previously checked `&& localPlayer?.seatNumber === null`
+                  const canSit = !isOccupied;
+                  
                   return (
                       <button 
                         key={seat.id}
@@ -613,6 +731,7 @@ const App: React.FC = () => {
         <h1 className="text-6xl font-woodcut text-ink mb-1 tracking-tight">Network School</h1>
         <h2 className="text-sm font-antique italic text-inkLight tracking-[0.4em] uppercase">One Night Ritual</h2>
       </div>
+      <div className="w-12 h-1 bg-rust mx-auto mb-6"></div>
       <div className="w-full max-w-lg z-10 p-2">
         {!gameState.roomCode && !isConnecting ? (
           <div className="bg-paper p-8 border-sketch shadow-sketch-lg space-y-8">
@@ -635,7 +754,9 @@ const App: React.FC = () => {
                     </div>
                 </div>
                 <Button fullWidth onClick={createRoom}><span className="text-xl">创建房间 (Create)</span></Button>
+                
                 <div className="flex gap-3 items-center"><div className="h-px bg-ink flex-1 opacity-20"></div><span className="font-woodcut text-ink/40 text-lg">OR</span><div className="h-px bg-ink flex-1 opacity-20"></div></div>
+                
                 <div className="flex gap-2">
                     <input type="number" placeholder="房间号" className="w-24 bg-paperDark border-2 border-ink p-2 text-center font-woodcut text-xl focus:outline-none focus:shadow-sketch" value={roomInput} onChange={e => setRoomInput(e.target.value)} />
                     <Button variant="secondary" onClick={joinRoom} className="flex-1"><span className="text-lg">加入房间 (Join)</span></Button>
@@ -676,9 +797,18 @@ const App: React.FC = () => {
             </div>
             {renderLobbyBoardConfig()}
             {localPlayer?.isHost ? (
-                <Button fullWidth onClick={startGame} className="mt-4 shadow-sketch-lg" disabled={gameState.players.length < gameState.settings.playerCount}>
+                <Button 
+                    fullWidth 
+                    onClick={startGame} 
+                    className="mt-4 shadow-sketch-lg" 
+                    disabled={gameState.players.length < gameState.settings.playerCount || !gameState.players.every(p => p.seatNumber !== null)}
+                >
                      <span className="text-2xl">开启今夜 (Begin)</span>
-                     {gameState.players.length < gameState.settings.playerCount && <span className="text-xs">等待全员入座...</span>}
+                     {gameState.players.length < gameState.settings.playerCount ? (
+                        <span className="text-xs">等待人员加入... (Waiting for players)</span>
+                     ) : !gameState.players.every(p => p.seatNumber !== null) ? (
+                        <span className="text-xs">等待全员入座... (Waiting for seats)</span>
+                     ) : null}
                 </Button>
               ) : (
                 <div className="text-center p-4"><p className="animate-pulse font-woodcut text-xl text-ink">等待房主...</p><p className="text-xs font-serif italic text-inkLight">Waiting for Host to begin ritual...</p></div>
@@ -921,25 +1051,56 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen text-ink relative overflow-hidden font-serif selection:bg-rust selection:text-white">
-      {/* Top Bar */}
-      <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-50 pointer-events-none">
-        <div className="flex gap-2 pointer-events-auto items-center">
-            {/* EXIT BUTTON - Visible when in a room */}
-            {gameState.roomCode && (
-               <button 
-                  onClick={exitRoom}
-                  className="w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-rust hover:text-white hover:border-rust transition-colors shadow-sketch font-serif font-bold text-lg group"
-                  title="退出房间 / Exit Room"
-               >
-                  <span className="group-hover:-translate-x-0.5 transition-transform">←</span>
-               </button>
+      {/* 
+        CRITICAL FIX for Navigation:
+        - Moved to a separate fixed overlay div that sits on top of everything.
+        - Container is pointer-events-none to let clicks pass through to game.
+        - Buttons are pointer-events-auto to capture their own clicks.
+        - Z-index is 9000 to be above game content but below modals.
+      */}
+      <div className="fixed top-0 left-0 w-full h-16 z-[9000] pointer-events-none flex justify-between items-center px-4">
+          {/* Back Button */}
+          <div className="pointer-events-auto">
+            {(gameState.roomCode || isConnecting) && (
+                 <button 
+                    type="button"
+                    onClick={handleBack}
+                    className="w-12 h-12 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-rust hover:text-white hover:border-rust transition-all shadow-sketch font-serif font-bold text-2xl group cursor-pointer active:scale-90 active:bg-rust active:text-white"
+                    title={isConnecting ? "取消连接 / Cancel" : "退出房间 / Exit Room"}
+                >
+                    <span className="group-hover:-translate-x-0.5 transition-transform pb-1">←</span>
+                </button>
             )}
-        </div>
-        
-        <div className="flex gap-2 pointer-events-auto mr-2">
-           <button onClick={() => setIsRuleBookOpen(true)} className="w-10 h-10 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch font-serif font-bold text-lg">?</button>
-        </div>
+          </div>
+
+          {/* Rule Button */}
+          <div className="pointer-events-auto">
+             <button onClick={() => setIsRuleBookOpen(true)} className="w-12 h-12 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch font-serif font-bold text-xl cursor-pointer">?</button>
+          </div>
       </div>
+      
+      {/* Exit Confirmation Dialog - High Z-index */}
+      {showExitDialog && (
+          <div className="fixed inset-0 z-[11000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+             <div className="bg-paper p-6 border-sketch shadow-sketch-lg max-w-sm w-full text-center relative">
+                <h3 className="font-woodcut text-2xl text-ink mb-2">离开房间?</h3>
+                <div className="w-12 h-1 bg-rust mx-auto mb-4"></div>
+                <p className="font-serif text-inkDim mb-8 text-sm leading-relaxed">
+                    这也将结束当前的连接。<br/>
+                    <span className="text-xs opacity-70">Disconnect and return to the main hall?</span>
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                    <Button variant="secondary" onClick={() => setShowExitDialog(false)}>
+                        <span className="text-base">取消 (Stay)</span>
+                    </Button>
+                    <Button variant="danger" onClick={confirmExit}>
+                        <span className="text-base">离开 (Exit)</span>
+                    </Button>
+                </div>
+             </div>
+          </div>
+      )}
+
       <div className="h-screen w-full pt-16 pb-10 overflow-y-auto relative z-10">
         {gameState.currentPhase === GamePhase.LOBBY ? renderLobby() : renderGameContent()}
       </div>

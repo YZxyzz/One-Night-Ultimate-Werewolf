@@ -76,3 +76,13 @@ export interface GameState {
   gameResult?: GameResult; // The final calculated result
   log: string[];
 }
+
+// Add ACTION_NIGHT_ACTION here
+export type NetworkMessage = 
+  | { type: 'HELLO'; player: Player } 
+  | { type: 'SYNC_STATE'; state: GameState } 
+  | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
+  | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
+  | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
+  | { type: 'ACTION_NIGHT_ACTION'; actionType: string; actorId: string; targets: (string | number)[] }
+  | { type: 'ACTION_GAME_OVER'; result: GameResult }; 

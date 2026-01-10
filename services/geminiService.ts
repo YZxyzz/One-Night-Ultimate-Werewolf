@@ -5,21 +5,43 @@ class GeminiService {
   private apiKey: string | undefined;
 
   constructor() {
-    // CRITICAL FIX: Safe access for process.env
-    // In many browser environments (like standard Vercel static deployments without a bundler polyfill),
-    // accessing 'process' directly throws ReferenceError: process is not defined.
-    try {
-      this.apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
-    } catch (e) {
-      console.warn("Failed to safely access process.env", e);
-      this.apiKey = undefined;
-    }
+    this.apiKey = this.getApiKey();
 
     if (this.apiKey) {
       this.ai = new GoogleGenAI({ apiKey: this.apiKey });
     } else {
       console.warn("Gemini API Key not found. AI features will be disabled.");
     }
+  }
+
+  // Robust way to get environment variable in different build systems (Vite, Webpack, Next.js)
+  private getApiKey(): string | undefined {
+    // 1. Check Vite standard (import.meta.env)
+    // Note: TypeScript might complain about import.meta if tsconfig isn't set for ESNext, 
+    // so we use a safe check.
+    try {
+      // Cast to any to avoid TypeScript errors if ImportMeta is not fully defined in the environment
+      const meta = import.meta as any;
+      if (meta && meta.env) {
+        if (meta.env.VITE_API_KEY) return meta.env.VITE_API_KEY;
+        if (meta.env.API_KEY) return meta.env.API_KEY;
+      }
+    } catch (e) {
+      // Ignore errors if import.meta is not supported
+    }
+
+    // 2. Check Node/Webpack standard (process.env)
+    try {
+      if (typeof process !== 'undefined' && process.env) {
+        if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
+        if (process.env.NEXT_PUBLIC_API_KEY) return process.env.NEXT_PUBLIC_API_KEY;
+        if (process.env.API_KEY) return process.env.API_KEY;
+      }
+    } catch (e) {
+      // Ignore errors if process is not defined
+    }
+
+    return undefined;
   }
 
   isAvailable(): boolean {

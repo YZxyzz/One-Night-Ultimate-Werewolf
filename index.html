@@ -2,23 +2,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Network School 桌游助手</title>
-    <!-- Polyfill for process to prevent crashes in libraries that assume Node.js environment -->
+    
+    <!-- Global Error Handler -->
     <script>
-      // CRITICAL: Define process.env before any other script runs
-      window.process = {
-        env: { NODE_ENV: 'production' },
-        version: '',
-        versions: {},
-        platform: 'browser'
+      window.onerror = function(message, source, lineno, colno, error) {
+        const root = document.getElementById('root');
+        if (root && root.innerHTML === '') {
+           document.body.innerHTML = `
+             <div style="padding: 20px; color: #9b2c2c; font-family: sans-serif;">
+               <h1>Application Error</h1>
+               <p>The application failed to start.</p>
+               <pre style="background: #eee; padding: 10px; overflow: auto;">${message}</pre>
+               <button onclick="window.location.reload()" style="padding: 10px 20px; margin-top: 10px;">Reload</button>
+             </div>
+           `;
+        }
+        console.error("Global Error:", error);
       };
     </script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Noto+Serif+SC:wght@400;700;900&display=swap" rel="stylesheet">
+    
     <script>
       tailwind.config = {
         theme: {
@@ -29,16 +40,12 @@
               serif: ['"Noto Serif SC"', '"IM Fell English"', 'serif'],
             },
             colors: {
-              ink: '#1a1a1a', // Softened Black for print feel
+              ink: '#1a1a1a', 
               inkLight: '#4a4a4a',
-              paper: '#f5f0e6', // Bright parchment
-              paperDark: '#e8e0d2', // Aged parchment areas
+              paper: '#f5f0e6', 
+              paperDark: '#e8e0d2', 
               gold: '#c5a059', 
-              rust: '#9b2c2c', // Deep red wax seal
-            },
-            backgroundImage: {
-              'paper-pattern': "url('https://www.transparenttextures.com/patterns/natural-paper.png')", 
-              'woodcut-pattern': "repeating-linear-gradient(45deg, #1a1a1a 0, #1a1a1a 1px, transparent 0, transparent 50%)"
+              rust: '#9b2c2c', 
             },
             boxShadow: {
               'sketch': '2px 3px 0px rgba(26, 26, 26, 0.8)',
@@ -46,16 +53,11 @@
             },
             animation: {
               'float': 'float 6s ease-in-out infinite',
-              'ink-pulse': 'inkPulse 4s ease-in-out infinite',
             },
             keyframes: {
               float: {
                 '0%, 100%': { transform: 'translateY(0)' },
                 '50%': { transform: 'translateY(-3px)' },
-              },
-              inkPulse: {
-                '0%, 100%': { opacity: '1' },
-                '50%': { opacity: '0.8' },
               }
             }
           }
@@ -67,6 +69,7 @@
         background-color: #f5f0e6;
         color: #1a1a1a;
         font-family: 'Noto Serif SC', serif;
+        overscroll-behavior: none; /* Prevent bounce on mobile */
       }
       
       .bg-texture {
@@ -81,7 +84,6 @@
         z-index: 0;
       }
 
-      /* HAND-DRAWN BORDER UTILITIES */
       .border-sketch {
         border: 2px solid #1a1a1a;
         border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
@@ -101,6 +103,7 @@
         transition: all 0.2s ease;
         position: relative;
         overflow: hidden;
+        cursor: pointer;
       }
       
       .btn-ink:hover {
@@ -116,22 +119,15 @@
       }
       .btn-ink-primary:hover {
         background-color: #333;
-        transform: rotate(1deg) scale(1.02);
-        box-shadow: 3px 4px 0px rgba(0,0,0,0.2);
+      }
+      
+      .btn-ink:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
       }
 
-      .btn-seal {
-        background-color: #9b2c2c;
-        color: #f5f0e6;
-        border: none;
-        border-radius: 50% 40% 60% 50% / 50% 60% 40% 50%; /* Imperfect circle */
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-      }
-      .btn-seal:hover {
-        background-color: #742a2a;
-      }
-
-      /* Custom Scrollbar */
       ::-webkit-scrollbar {
         width: 8px;
       }
@@ -148,19 +144,15 @@
       .transform-style-3d { transform-style: preserve-3d; }
       .backface-hidden { backface-visibility: hidden; }
       .rotate-y-180 { transform: rotateY(180deg); }
-      
-      /* Old print effect */
-      .woodcut-filter { 
-        filter: contrast(1.2) sepia(0.2) grayscale(0.2); 
-      }
+      .woodcut-filter { filter: contrast(1.2) sepia(0.2) grayscale(0.2); }
     </style>
-<script type="importmap">
+  <script type="importmap">
 {
   "imports": {
-    "@google/genai": "https://esm.sh/@google/genai@^1.35.0",
+    "react": "https://esm.sh/react@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3"
+    "@google/genai": "https://esm.sh/@google/genai@^1.35.0"
   }
 }
 </script>
@@ -168,5 +160,7 @@
   <body>
     <div class="bg-texture"></div>
     <div id="root" class="relative z-10 h-full"></div>
+    <!-- CRITICAL: Entry point for React/Vite -->
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>

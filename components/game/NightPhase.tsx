@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { GameState, RoleType, Player } from '../../types';
 import { ROLES, NIGHT_SEQUENCE } from '../../constants';
 import Button from '../ui/Button';
 import PlayingCard from '../ui/PlayingCard';
+import { geminiService } from '../../services/geminiService';
+import { soundService } from '../../services/soundService';
 
 const TIPS = [
   { cn: "天亮后不要看牌！只凭记忆和谎言。", en: "Don't look at your card after waking up!" },
@@ -19,7 +21,7 @@ interface NightPhaseProps {
   currentPlayer: Player;
   onPhaseComplete: () => void; 
   onGodSpeechComplete: () => void; 
-  onAction: (actionType: string, targetIds: string[]) => void;
+  onAction: (actionType: string, targetIds: (string | number)[]) => void;
 }
 
 const NightPhase: React.FC<NightPhaseProps> = ({ 
@@ -32,18 +34,37 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   const currentNightRole = NIGHT_SEQUENCE[gameState.currentNightRoleIndex];
   const roleDef = ROLES[currentNightRole];
   const [hasActed, setHasActed] = useState(false);
-  const [roleTimer, setRoleTimer] = useState(15); // Reduced from 20 to 15
-  const [currentTipIndex, setCurrentTipIndex] = useState(0);
+  const [roleTimer, setRoleTimer] = useState(20); 
   const isMyTurn = currentPlayer.initialRole === currentNightRole;
-  
-  const nextTip = () => setCurrentTipIndex((prev) => (prev + 1) % TIPS.length);
-  const prevTip = () => setCurrentTipIndex((prev) => (prev - 1 + TIPS.length) % TIPS.length);
+  const hasSpokenRef = useRef(false);
 
-  // Timer
+  // --- AUDIO NARRATION (HOST ONLY) ---
+  useEffect(() => {
+    // Reset spoken flag when role changes
+    hasSpokenRef.current = false;
+    
+    const playNarration = async () => {
+        if (!currentPlayer.isHost || !roleDef) return;
+        
+        // Prevent double speech
+        if (hasSpokenRef.current) return;
+        hasSpokenRef.current = true;
+
+        console.log("Generating narration for:", roleDef.name);
+        // Play wake up text
+        const audioBuffer = await geminiService.generateNarration(roleDef.wakeUpText + "。 " + roleDef.actionDescription);
+        if (audioBuffer) {
+            await soundService.playAudioData(audioBuffer);
+        }
+    };
+
+    playNarration();
+  }, [gameState.currentNightRoleIndex, currentPlayer.isHost]);
+
+  // --- TIMER ---
   useEffect(() => {
     if (!currentPlayer.isHost) return;
-    // Set timer based on complexity. Werewolves/Seer need more time than Mason.
-    const initialTime = (currentNightRole === RoleType.WEREWOLF || currentNightRole === RoleType.SEER) ? 15 : 10;
+    const initialTime = (currentNightRole === RoleType.WEREWOLF || currentNightRole === RoleType.SEER) ? 25 : 15;
     setRoleTimer(initialTime);
     
     const interval = setInterval(() => {
@@ -59,13 +80,13 @@ const NightPhase: React.FC<NightPhaseProps> = ({
     return () => clearInterval(interval);
   }, [gameState.currentNightRoleIndex, currentPlayer.isHost, onGodSpeechComplete, currentNightRole]);
 
-  // Role Logic State
+  // --- ROLE LOGIC STATES ---
   const [seerMode, setSeerMode] = useState<'CHOICE' | 'PLAYER' | 'CENTER'>('CHOICE');
   const [seerSelectedCenterIndices, setSeerSelectedCenterIndices] = useState<number[]>([]);
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [revealedRoles, setRevealedRoles] = useState<Record<string, RoleType>>({}); 
 
-  // Handlers
+  // --- HANDLERS ---
   const handleSeerAction = () => {
     if (seerMode === 'PLAYER') {
        if (selectedTargetIds.length !== 1) return;
@@ -103,118 +124,141 @@ const NightPhase: React.FC<NightPhaseProps> = ({
     onAction('TROUBLEMAKER_SWAP', selectedTargetIds);
     setHasActed(true);
   };
-
-  const renderPlayerCards = (limit: number, onConfirm: () => void, confirmTextCn: string, confirmTextEn: string) => {
-    const others = gameState.players.filter(p => p.id !== currentPlayer.id);
-    return (
-      <div className="flex flex-col items-center gap-6 animate-fade-in-up w-full">
-        <div className="flex flex-wrap justify-center gap-4">
-          {others.map(p => {
-             const isSelected = selectedTargetIds.includes(p.id);
-             const role = revealedRoles[p.id] || null;
-             const isRevealed = !!role;
-
-             return (
-               <div key={p.id} className="flex flex-col items-center group">
-                 <PlayingCard
-                    role={role}
-                    isRevealed={isRevealed}
-                    isSelected={isSelected}
-                    label={`${p.seatNumber ? `#${p.seatNumber}` : ''}`}
-                    size="md"
-                    onClick={() => {
-                       if (hasActed) return;
-                       if (isSelected) setSelectedTargetIds(prev => prev.filter(id => id !== p.id));
-                       else if (selectedTargetIds.length < limit) setSelectedTargetIds(prev => [...prev, p.id]);
-                    }}
-                 />
-                 <div className={`mt-3 font-serif text-sm tracking-wider px-3 py-1 bg-white/50 rounded border border-ink/20 ${isSelected ? 'text-danger border-danger font-bold' : 'text-ink'}`}>
-                   {p.name}
-                 </div>
-               </div>
-             )
-          })}
-        </div>
-        {!hasActed ? (
-          <div className="mt-6 w-full max-w-xs">
-            <Button 
-              fullWidth
-              disabled={selectedTargetIds.length !== limit}
-              onClick={onConfirm}
-              variant={selectedTargetIds.length === limit ? 'primary' : 'secondary'}
-            >
-              <div className="flex flex-col items-center leading-none py-1">
-                <span className="text-lg">{confirmTextCn}</span>
-                <span className="text-xs opacity-60 font-normal mt-1">{confirmTextEn}</span>
-              </div>
-            </Button>
-          </div>
-        ) : (
-           <div className="mt-6 text-danger animate-pulse text-center">
-              <div className="text-xl font-bold">行动已确认</div>
-              <div className="text-sm opacity-70">Action Confirmed</div>
-           </div>
-        )}
-      </div>
-    );
+  
+  const handleDrunkAction = () => {
+      if (seerSelectedCenterIndices.length !== 1) return;
+      onAction('DRUNK_SWAP', [seerSelectedCenterIndices[0]]);
+      setHasActed(true);
   };
 
-  const renderCenterCards = (
-    limit: number, 
-    selectedIndices: number[], 
-    setSelectedIndices: React.Dispatch<React.SetStateAction<number[]>>,
-    onConfirm: () => void
+  // --- RENDER HELPERS: RADIAL SEATING CHART ---
+
+  const renderRadialUI = (
+      instruction: string,
+      playerSelectLimit: number,
+      centerSelectLimit: number,
+      onConfirm: () => void,
+      confirmText: string
   ) => {
-    return (
-      <div className="flex flex-col items-center gap-6 animate-fade-in-up w-full">
-        <div className="flex justify-center gap-4 md:gap-8 p-6 bg-rune-circle bg-contain bg-center bg-no-repeat rounded-full">
-          {[0, 1, 2].map(idx => {
-            const isSelected = selectedIndices.includes(idx);
-            const role = revealedRoles[`center-${idx}`] || null;
-            const isRevealed = !!role;
+      const totalSeats = gameState.settings.playerCount;
+      const seats = Array.from({ length: totalSeats }, (_, i) => {
+          const angle = (i * (360 / totalSeats)) - 90;
+          const radius = 110; // Slightly larger for interaction
+          const x = Math.cos((angle * Math.PI) / 180) * radius;
+          const y = Math.sin((angle * Math.PI) / 180) * radius;
+          return { id: i + 1, x, y };
+      });
 
-            return (
-              <PlayingCard
-                key={idx}
-                role={role}
-                isRevealed={isRevealed}
-                isSelected={isSelected}
-                label={`Center ${idx + 1}`}
-                size="md"
-                onClick={() => {
-                  if (hasActed) return;
-                  if (isSelected) setSelectedIndices(prev => prev.filter(i => i !== idx));
-                  else if (selectedIndices.length < limit) setSelectedIndices(prev => [...prev, idx]);
-                }}
-              />
-            )
-          })}
-        </div>
-        {!hasActed ? (
-           <div className="mt-6 w-full max-w-xs">
-             <Button 
-              fullWidth
-              disabled={selectedIndices.length !== limit} 
-              onClick={onConfirm}
-              variant={selectedIndices.length === limit ? 'primary' : 'secondary'}
-            >
-              <div className="flex flex-col items-center leading-none py-1">
-                <span className="text-lg">翻开底牌</span>
-                <span className="text-xs opacity-60 font-normal mt-1">Reveal Fate</span>
+      return (
+          <div className="relative w-full h-[450px] flex flex-col items-center justify-center animate-fade-in-up">
+              <h3 className="text-xl font-woodcut text-ink mb-4 absolute top-0 z-20 bg-paper/80 px-4 py-1 rounded-full border border-ink/20">{instruction}</h3>
+              
+              <div className="relative w-[320px] h-[320px] mt-8">
+                  {/* Center Circle (Table) */}
+                  <div className="absolute inset-0 m-auto w-48 h-48 rounded-full border-4 border-ink/20 bg-paperDark flex flex-col items-center justify-center shadow-inner z-0">
+                      {/* Center Cards Area */}
+                      {centerSelectLimit > 0 && (
+                          <div className="flex gap-2 z-10">
+                              {[0, 1, 2].map(idx => {
+                                  const isSelected = seerSelectedCenterIndices.includes(idx);
+                                  const role = revealedRoles[`center-${idx}`] || null;
+                                  const isRevealed = !!role;
+                                  
+                                  return (
+                                      <div 
+                                        key={idx}
+                                        onClick={() => {
+                                            if (hasActed) return;
+                                            if (isSelected) setSeerSelectedCenterIndices(prev => prev.filter(i => i !== idx));
+                                            else if (seerSelectedCenterIndices.length < centerSelectLimit) setSeerSelectedCenterIndices(prev => [...prev, idx]);
+                                        }}
+                                        className={`w-10 h-14 rounded border-2 transition-all cursor-pointer relative ${isSelected ? 'border-rust -translate-y-2 shadow-md' : 'border-ink/40 bg-paper hover:bg-white'}`}
+                                      >
+                                          {isRevealed ? (
+                                              <img src={ROLES[role].imagePlaceholder} className="w-full h-full object-cover opacity-80" />
+                                          ) : (
+                                              <div className="w-full h-full flex items-center justify-center text-[8px] text-ink/30 font-woodcut">?</div>
+                                          )}
+                                          {isSelected && <div className="absolute -top-1 -right-1 w-3 h-3 bg-rust rounded-full"></div>}
+                                      </div>
+                                  );
+                              })}
+                          </div>
+                      )}
+                      {centerSelectLimit > 0 && <span className="text-[9px] text-ink/40 mt-2 uppercase tracking-widest font-bold">Center Cards</span>}
+                  </div>
+
+                  {/* Player Seats */}
+                  {seats.map((seat) => {
+                      const player = gameState.players.find(p => p.seatNumber === seat.id);
+                      if (!player) return null; // Should not happen in game
+                      
+                      const isMe = player.id === currentPlayer.id;
+                      const isSelected = selectedTargetIds.includes(player.id);
+                      const isRevealed = !!revealedRoles[player.id];
+                      const role = revealedRoles[player.id];
+                      
+                      // Determine if selectable
+                      const canSelect = !isMe && playerSelectLimit > 0 && !hasActed;
+
+                      return (
+                          <button 
+                            key={seat.id}
+                            onClick={() => {
+                                if (!canSelect) return;
+                                if (isSelected) setSelectedTargetIds(prev => prev.filter(id => id !== player.id));
+                                else if (selectedTargetIds.length < playerSelectLimit) setSelectedTargetIds(prev => [...prev, player.id]);
+                            }}
+                            className={`absolute w-14 h-14 -ml-7 -mt-7 rounded-full border-2 flex flex-col items-center justify-center transition-all duration-300 z-20
+                                ${isMe ? 'bg-ink text-paper border-ink scale-90 cursor-default' : ''}
+                                ${isSelected ? 'bg-rust text-white border-rust scale-110 shadow-lg' : 'bg-paper text-ink border-ink hover:scale-105'}
+                                ${!canSelect && !isMe ? 'opacity-50 grayscale' : ''}
+                            `}
+                            style={{ left: `calc(50% + ${seat.x}px)`, top: `calc(50% + ${seat.y}px)` }}
+                          >
+                              {isRevealed ? (
+                                   <div className="w-full h-full rounded-full overflow-hidden relative">
+                                       <img src={ROLES[role].imagePlaceholder} className="w-full h-full object-cover" />
+                                       <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-[8px] text-white font-bold uppercase">{ROLES[role].name.split('/')[0]}</div>
+                                   </div>
+                              ) : (
+                                  <>
+                                    <span className="font-woodcut text-lg leading-none">{player.name.charAt(0)}</span>
+                                    <span className="text-[6px] uppercase font-bold max-w-full overflow-hidden text-ellipsis whitespace-nowrap px-1">{player.name}</span>
+                                  </>
+                              )}
+                              
+                              {/* Seat Number Badge */}
+                              <div className={`absolute -top-1 -left-1 w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold border ${isSelected ? 'bg-white text-rust border-white' : 'bg-ink text-white border-ink'}`}>
+                                  {seat.id}
+                              </div>
+                          </button>
+                      );
+                  })}
               </div>
-            </Button>
-           </div>
-        ) : (
-           <div className="mt-6 text-danger animate-pulse text-center">
-              <div className="text-xl font-bold">命运已揭晓</div>
-              <div className="text-sm opacity-70">Fate Revealed</div>
-           </div>
-        )}
-      </div>
-    );
+
+              {/* Confirm Action Button area */}
+              <div className="absolute bottom-0 w-full px-6 flex justify-center">
+                  {!hasActed ? (
+                    <Button 
+                      onClick={onConfirm}
+                      disabled={(playerSelectLimit > 0 && selectedTargetIds.length !== playerSelectLimit) || (centerSelectLimit > 0 && seerSelectedCenterIndices.length !== centerSelectLimit)}
+                      className="shadow-sketch-lg"
+                    >
+                        {confirmText}
+                    </Button>
+                  ) : (
+                    <div className="bg-paper border-sketch px-6 py-2 text-center animate-pulse">
+                        <span className="text-rust font-woodcut text-xl">已确认 / Confirmed</span>
+                    </div>
+                  )}
+              </div>
+          </div>
+      );
   };
 
-  // --- Main Render ---
+
+  // --- MAIN RENDER ---
 
   // Sleep Mode
   if (!isMyTurn) {
@@ -223,8 +267,11 @@ const NightPhase: React.FC<NightPhaseProps> = ({
         {/* Host Timer */}
         {currentPlayer.isHost && (
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-50">
-             <div className="text-ink/60 text-xs tracking-widest font-mystical">
-                仪式进行中 / RITUAL IN PROGRESS
+             <div className="flex items-center gap-2">
+                 <div className="w-2 h-2 bg-rust rounded-full animate-ping"></div>
+                 <div className="text-rust text-xs font-bold tracking-widest">
+                    正在播报... / BROADCASTING
+                 </div>
              </div>
              <div className="flex items-center gap-4">
                 <div className="text-xl font-mono text-ink">{roleTimer}s</div>
@@ -245,20 +292,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
             <p className="text-lg text-ink/60 mt-2 font-serif">夜幕降临，请闭眼</p>
         </div>
         
-        {/* Tips Carousel - Styled like a scroll */}
-        <div className="mt-12 w-full max-w-md relative z-10 flex items-center justify-between gap-4">
-            <button onClick={prevTip} className="p-4 text-2xl text-ink/50 hover:text-ink transition-colors">‹</button>
-            <div className="flex-1 p-6 sketch-border bg-paper rounded-lg min-h-[160px] flex flex-col items-center justify-center">
-              <div className="text-xs uppercase tracking-widest text-danger mb-3 border-b border-danger/20 pb-1">
-                提示 #{currentTipIndex + 1}
-              </div>
-              <p className="text-center font-bold text-ink text-lg mb-2">{TIPS[currentTipIndex].cn}</p>
-              <p className="text-center font-serif text-inkDim text-sm italic">{TIPS[currentTipIndex].en}</p>
-            </div>
-            <button onClick={nextTip} className="p-4 text-2xl text-ink/50 hover:text-ink transition-colors">›</button>
-        </div>
-        
-        <div className="absolute bottom-8 text-center w-full">
+        <div className="absolute bottom-16 text-center w-full">
            <div className="h-px w-24 bg-ink/20 mx-auto mb-2"></div>
            <p className="text-xs tracking-widest uppercase text-ink/50">
              当前行动: <span className="text-ink font-bold">{roleDef?.name.split('/')[0]}</span>
@@ -270,130 +304,91 @@ const NightPhase: React.FC<NightPhaseProps> = ({
 
   // Active Turn
   return (
-    <div className="flex flex-col items-center justify-start h-full p-4 overflow-y-auto relative">
+    <div className="flex flex-col items-center justify-start h-full pt-4 pb-20 overflow-hidden relative">
       
       {/* Title / Header */}
-      <div className="mt-4 mb-8 text-center animate-glow w-full z-10">
-        <h2 className="text-4xl md:text-6xl font-mystical text-ink mb-1 drop-shadow-sm tracking-wide">{roleDef?.name.split('/')[0]}</h2>
-        <p className="text-magic font-serif italic opacity-90 text-lg">{roleDef?.name.split('/')[1]}</p>
-        <div className="w-32 h-px bg-gradient-to-r from-transparent via-ink/50 to-transparent mx-auto mt-4"></div>
+      <div className="text-center animate-glow w-full z-10 mb-2">
+        <h2 className="text-3xl font-mystical text-ink mb-1 drop-shadow-sm tracking-wide">{roleDef?.name.split('/')[0]}</h2>
+        <p className="text-inkLight font-serif italic text-xs opacity-80">{roleDef?.actionDescription}</p>
       </div>
 
-      {/* Main Action Area */}
-      <div className="w-full max-w-4xl flex-1 flex flex-col items-center justify-start relative z-10 bg-white/40 p-6 rounded-xl border border-ink/10 shadow-inner">
+      {/* Main Action Area - Radial UI */}
+      <div className="w-full flex-1 relative z-10">
         
         {/* SEER */}
         {currentNightRole === RoleType.SEER && (
            <>
              {seerMode === 'CHOICE' && !hasActed && (
-               <div className="flex flex-col md:flex-row gap-6 animate-fade-in-up mt-8">
-                  <button onClick={() => { setSeerMode('PLAYER'); setSelectedTargetIds([]); }} className="group totem-border p-8 w-48 h-64 flex flex-col items-center justify-center hover:bg-white transition-all duration-300 rounded-xl">
-                     <span className="text-5xl mb-6 opacity-60 group-hover:opacity-100 transition-opacity">👥</span>
-                     <span className="font-bold text-ink text-xl mb-1">查看玩家</span>
-                     <span className="text-sm text-inkDim font-serif">View Player</span>
+               <div className="flex flex-col items-center justify-center h-full gap-6 animate-fade-in-up">
+                  <button onClick={() => { setSeerMode('PLAYER'); setSelectedTargetIds([]); }} className="group sketch-border p-6 w-64 flex items-center justify-center gap-4 hover:bg-white transition-all bg-paper shadow-md">
+                     <span className="text-4xl">👤</span>
+                     <div className="text-left">
+                        <span className="font-bold text-ink block">查看一位玩家</span>
+                        <span className="text-xs text-inkDim font-serif">View 1 Player</span>
+                     </div>
                   </button>
-                  <button onClick={() => setSeerMode('CENTER')} className="group totem-border p-8 w-48 h-64 flex flex-col items-center justify-center hover:bg-white transition-all duration-300 rounded-xl">
-                     <span className="text-5xl mb-6 opacity-60 group-hover:opacity-100 transition-opacity">🃏</span>
-                     <span className="font-bold text-ink text-xl mb-1">查看底牌</span>
-                     <span className="text-sm text-inkDim font-serif">View Center</span>
+                  <button onClick={() => setSeerMode('CENTER')} className="group sketch-border p-6 w-64 flex items-center justify-center gap-4 hover:bg-white transition-all bg-paper shadow-md">
+                     <span className="text-4xl">🃏</span>
+                     <div className="text-left">
+                        <span className="font-bold text-ink block">查看两张底牌</span>
+                        <span className="text-xs text-inkDim font-serif">View 2 Center Cards</span>
+                     </div>
                   </button>
                </div>
              )}
-             {seerMode === 'PLAYER' && (
-               <div className="w-full">
-                 <div className="flex items-center justify-center mb-6 gap-4">
-                   <h3 className="text-xl text-ink font-bold">预言: 选择一位玩家</h3>
-                   {!hasActed && <button onClick={() => setSeerMode('CHOICE')} className="text-sm text-ink/70 underline hover:text-ink">返回 / Back</button>}
+             {seerMode === 'PLAYER' && renderRadialUI("选择一位玩家查看身份", 1, 0, handleSeerAction, "揭示真身")}
+             {seerMode === 'CENTER' && renderRadialUI("选择两张底牌查看", 0, 2, handleSeerAction, "翻开底牌")}
+             {hasActed && (
+                 <div className="absolute bottom-20 w-full text-center">
+                    <button onClick={() => setSeerMode('CHOICE')} className="text-ink/50 text-sm underline hidden">Back</button>
                  </div>
-                 {renderPlayerCards(1, handleSeerAction, "揭示真身", "Reveal Identity")}
-               </div>
-             )}
-             {seerMode === 'CENTER' && (
-               <div className="w-full">
-                 <div className="flex items-center justify-center mb-6 gap-4">
-                   <h3 className="text-xl text-ink font-bold">预言: 选择两张底牌</h3>
-                   {!hasActed && <button onClick={() => setSeerMode('CHOICE')} className="text-sm text-ink/70 underline hover:text-ink">返回 / Back</button>}
-                 </div>
-                 {renderCenterCards(2, seerSelectedCenterIndices, setSeerSelectedCenterIndices, handleSeerAction)}
-               </div>
              )}
            </>
         )}
 
         {/* ROBBER */}
-        {currentNightRole === RoleType.ROBBER && (
-           <div className="w-full">
-              <p className="text-center text-inkDim mb-6 font-serif italic">"今晚，我要窃取谁的人生？"</p>
-              {renderPlayerCards(1, handleRobberAction, "实施盗窃", "Steal Identity")}
-           </div>
-        )}
+        {currentNightRole === RoleType.ROBBER && renderRadialUI("选择一位玩家交换身份", 1, 0, handleRobberAction, "实施盗窃")}
 
         {/* TROUBLEMAKER */}
-        {currentNightRole === RoleType.TROUBLEMAKER && (
-           <div className="w-full">
-              <p className="text-center text-inkDim mb-6 font-serif italic">"混乱是阶梯..."</p>
-              {renderPlayerCards(2, handleTroublemakerAction, "制造混乱", "Sow Discord")}
-           </div>
-        )}
+        {currentNightRole === RoleType.TROUBLEMAKER && renderRadialUI("选择两位玩家交换他们的牌", 2, 0, handleTroublemakerAction, "制造混乱")}
+        
+        {/* DRUNK */}
+        {currentNightRole === RoleType.DRUNK && renderRadialUI("选择一张底牌与自己交换", 0, 1, handleDrunkAction, "盲目交换")}
 
         {/* WEREWOLF */}
         {currentNightRole === RoleType.WEREWOLF && (
-           <div className="w-full flex flex-col items-center mt-4">
+           <div className="w-full h-full flex flex-col items-center justify-center">
               {(() => {
                   const teammates = gameState.players.filter(p => p.initialRole === RoleType.WEREWOLF && p.id !== currentPlayer.id);
                   const isLoneWolf = teammates.length === 0;
 
                   if (!isLoneWolf) {
                     return (
-                       <div className="sketch-border p-8 rounded-xl text-center max-w-lg bg-red-50/50 w-full animate-fade-in-up">
+                       <div className="sketch-border p-8 rounded-xl text-center max-w-sm bg-red-50/50 w-full animate-fade-in-up mx-6">
                           <h3 className="font-mystical text-2xl text-danger mb-2">狼群集结</h3>
-                          <p className="text-sm text-red-800 mb-6 tracking-widest uppercase border-b border-red-800/20 pb-2">The Pack United</p>
-                          <div className="flex flex-wrap justify-center gap-6">
+                          <div className="flex flex-wrap justify-center gap-4 my-6">
                             {teammates.map(p => (
-                               <div key={p.id} className="flex flex-col items-center group">
-                                  {/* USE PLAYING CARD FOR TEAMMATES */}
-                                  <PlayingCard 
-                                    role={p.initialRole} 
-                                    isRevealed={true} 
-                                    isSelected={true}
-                                    label={`#${p.seatNumber}`}
-                                    size="md"
-                                  />
-                                  <span className="mt-3 font-bold text-danger tracking-widest text-lg">{p.name}</span>
+                               <div key={p.id} className="flex flex-col items-center">
+                                  <div className="w-16 h-16 rounded-full border-2 border-danger bg-paper flex items-center justify-center overflow-hidden">
+                                     <img src={ROLES[p.initialRole].imagePlaceholder} className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="mt-2 font-bold text-danger text-sm">{p.name}</span>
                                </div>
                             ))}
                           </div>
                           {!hasActed ? (
-                             <div className="mt-10 max-w-xs mx-auto">
-                                <Button onClick={() => setHasActed(true)} variant="danger" fullWidth>
-                                  <div className="flex flex-col">
-                                    <span>确认同伴</span>
-                                    <span className="text-xs opacity-70">Acknowledge</span>
-                                  </div>
-                                </Button>
-                             </div>
-                          ) : (
-                            <div className="mt-6 text-danger font-bold text-xl animate-pulse">已确认 / Confirmed</div>
-                          )}
+                                <Button onClick={() => setHasActed(true)} variant="danger" fullWidth>确认同伴</Button>
+                          ) : <div className="text-danger font-bold">已确认</div>}
                        </div>
                     );
                   } else {
-                    return (
-                      <div className="w-full animate-fade-in-up">
-                         <div className="flex items-center justify-center mb-6 flex-col">
-                            <h3 className="text-2xl text-danger font-bold tracking-widest uppercase">孤狼 (Lone Wolf)</h3>
-                            <p className="text-inkDim text-sm font-serif italic">"没有同伴... 但你可以窥探命运。"</p>
-                         </div>
-                        
-                        {renderCenterCards(1, seerSelectedCenterIndices, setSeerSelectedCenterIndices, () => {
+                    return renderRadialUI("你是孤狼。你可以查看一张底牌。", 0, 1, () => {
                            if (seerSelectedCenterIndices.length !== 1) return;
                            const idx = seerSelectedCenterIndices[0];
                            const card = gameState.centerCards[idx];
                            setRevealedRoles({ [`center-${idx}`]: card });
                            setHasActed(true);
-                        })}
-                      </div>
-                    );
+                        }, "窥探底牌");
                   }
               })()}
            </div>
@@ -401,29 +396,22 @@ const NightPhase: React.FC<NightPhaseProps> = ({
 
         {/* INSOMNIAC */}
         {currentNightRole === RoleType.INSOMNIAC && (
-           <div className="text-center mt-8">
+           <div className="h-full flex flex-col items-center justify-center">
               {!hasActed ? (
-                <div className="max-w-xs mx-auto">
                  <Button onClick={() => {
                     setRevealedRoles({ 'insomniac-self': currentPlayer.role! });
                     setHasActed(true);
-                 }} fullWidth>
-                   <div className="flex flex-col">
-                     <span>检查我的身份</span>
-                     <span className="text-xs opacity-70">Check My Card</span>
-                   </div>
-                 </Button>
-                </div>
+                 }} className="shadow-sketch-lg">检查我的身份</Button>
               ) : (
-                 <div className="mt-8">
+                 <div className="text-center animate-fade-in-up">
                     <p className="text-inkDim mb-4 font-serif">当你醒来时...</p>
-                    <div className="flex justify-center">
+                    <div className="w-40 h-60 mx-auto transform scale-105">
                       <PlayingCard 
                         role={currentPlayer.role} 
                         isRevealed={true} 
                         isSelected={true}
                         label="Your Role"
-                        size="lg"
+                        size="md"
                       />
                     </div>
                  </div>
@@ -433,26 +421,29 @@ const NightPhase: React.FC<NightPhaseProps> = ({
         
         {/* Simple Roles */}
         {(currentNightRole === RoleType.MASON || currentNightRole === RoleType.MINION) && (
-           <div className="text-center mt-8 p-6 bg-paperDark rounded-xl border border-ink/10">
-              <p className="text-2xl text-ink mb-2 font-bold">
-                {currentNightRole === RoleType.MINION ? "效忠狼人" : "守夜人兄弟会"}
-              </p>
-              <p className="text-sm text-inkDim mb-6 uppercase tracking-wider">
-                {currentNightRole === RoleType.MINION ? "Serve the Wolves" : "Brotherhood of Stone"}
-              </p>
-              
-              {!hasActed ? (
-                 <div className="max-w-xs mx-auto">
-                   <Button onClick={() => setHasActed(true)} fullWidth>
-                      <div className="flex flex-col">
-                         <span>确认</span>
-                         <span className="text-xs opacity-70">Acknowledge</span>
+           <div className="h-full flex items-center justify-center px-6">
+               <div className="text-center p-8 bg-paperDark rounded-xl border-sketch w-full max-w-sm">
+                  <p className="text-2xl text-ink mb-2 font-bold">
+                    {currentNightRole === RoleType.MINION ? "效忠狼人" : "守夜人兄弟会"}
+                  </p>
+                  
+                  {currentNightRole === RoleType.MASON && (
+                      <div className="my-4">
+                          {gameState.players.filter(p => p.initialRole === RoleType.MASON && p.id !== currentPlayer.id).map(p => (
+                             <div key={p.id} className="font-bold text-ink border-b border-ink/20 pb-1 mb-2">同伴: {p.name}</div>
+                          ))}
+                          {gameState.players.filter(p => p.initialRole === RoleType.MASON && p.id !== currentPlayer.id).length === 0 && (
+                              <div className="text-inkDim italic">没有其他守夜人。</div>
+                          )}
                       </div>
-                   </Button>
-                 </div>
-              ) : (
-                 <div className="text-inkDim mt-4 italic">等待天亮 / Waiting for dawn...</div>
-              )}
+                  )}
+
+                  {!hasActed ? (
+                       <Button onClick={() => setHasActed(true)} fullWidth>确认</Button>
+                  ) : (
+                     <div className="text-inkDim mt-4 italic">等待天亮...</div>
+                  )}
+               </div>
            </div>
         )}
 
