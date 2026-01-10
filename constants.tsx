@@ -9,6 +9,20 @@ const getImageUrl = (prompt: string) => {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(basePrompt)}?width=400&height=600&nologo=true&seed=${42}`; // Fixed seed for consistency across re-renders
 };
 
+// Distinct colors for player avatars (Mystical/Muted tones for white text contrast)
+export const AVATAR_COLORS = [
+  '#7f1d1d', // Red 900
+  '#14532d', // Green 900
+  '#1e3a8a', // Blue 900
+  '#581c87', // Purple 900
+  '#78350f', // Amber 900
+  '#312e81', // Indigo 900
+  '#831843', // Pink 900
+  '#4c1d95', // Violet 900
+  '#3f3f46', // Zinc 700
+  '#0f766e', // Teal 700
+];
+
 export const ROLES: Record<RoleType, RoleDefinition> = {
   [RoleType.WEREWOLF]: {
     type: RoleType.WEREWOLF,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { GamePhase, GameState, RoleType, Player, RoleTeam, GameResult } from './types';
-import { ROLES, DEFAULT_PLAYER_COUNT, NIGHT_SEQUENCE } from './constants';
+import { ROLES, DEFAULT_PLAYER_COUNT, NIGHT_SEQUENCE, AVATAR_COLORS } from './constants';
 import Button from './components/ui/Button';
 import NightPhase from './components/game/NightPhase';
 import RuleBook from './components/game/RuleBook';
@@ -10,6 +10,11 @@ import { soundService } from './services/soundService';
 // --- Safe ID Generator ---
 const generateId = () => {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
+
+// --- Color Generator ---
+const getRandomColor = () => {
+  return AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
 };
 
 // P2P Message Types defined in types.ts now includes ACTION_NIGHT_ACTION
@@ -181,7 +186,15 @@ const App: React.FC = () => {
 
         peer.on('open', (id: string) => {
           // MODIFIED: Host starts with seatNumber: null to allow manual selection
-          const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: true };
+          const newPlayer: Player = { 
+              id: pid, 
+              name: playerName.trim(), 
+              color: getRandomColor(), // Assign color
+              seatNumber: null, 
+              role: null, 
+              initialRole: null, 
+              isHost: true 
+          };
           setLocalPlayer(newPlayer);
           setGameState({ 
               ...getInitialState(), 
@@ -235,7 +248,12 @@ const App: React.FC = () => {
         case 'HELLO':
           const exists = newState.players.find(p => p.id === data.player.id);
           if (!exists) {
-            newState.players = [...newState.players, data.player];
+            // Ensure color is preserved or assigned if missing
+            const joiningPlayer = {
+                ...data.player,
+                color: data.player.color || getRandomColor()
+            };
+            newState.players = [...newState.players, joiningPlayer];
           }
           shouldBroadcast = true;
           if (conn && conn.open) {
@@ -269,7 +287,11 @@ const App: React.FC = () => {
         case 'ACTION_NIGHT_ACTION':
            const nightActionData = data as Extract<NetworkMessage, { type: 'ACTION_NIGHT_ACTION' }>;
            const { actionType, actorId, targets } = nightActionData;
-           
+           let logEntry = '';
+
+           const actor = newState.players.find(p => p.id === actorId);
+           const actorName = actor ? actor.name : 'Unknown';
+
            if (actionType === 'ROBBER_SWAP') {
               const robber = newState.players.find(p => p.id === actorId);
               const target = newState.players.find(p => p.id === targets[0]);
@@ -278,6 +300,7 @@ const App: React.FC = () => {
                  const targetRole = target.role;
                  robber.role = targetRole;
                  target.role = robberRole;
+                 logEntry = `[强盗] ${actorName} 交换了 ${target.name} 的牌`;
               }
            } else if (actionType === 'TROUBLEMAKER_SWAP') {
               const t1 = newState.players.find(p => p.id === targets[0]);
@@ -287,6 +310,7 @@ const App: React.FC = () => {
                  const r2 = t2.role;
                  t1.role = r2;
                  t2.role = r1;
+                 logEntry = `[捣蛋鬼] ${actorName} 交换了 ${t1.name} 和 ${t2.name} 的牌`;
               }
            } else if (actionType === 'DRUNK_SWAP') {
               const drunk = newState.players.find(p => p.id === actorId);
@@ -296,8 +320,32 @@ const App: React.FC = () => {
                  const centerRole = newState.centerCards[centerIdx];
                  drunk.role = centerRole;
                  newState.centerCards[centerIdx] = drunkRole;
+                 logEntry = `[酒鬼] ${actorName} 与 底牌${centerIdx + 1} 进行了交换`;
               }
            }
+           
+           if (logEntry) {
+              newState.log = [...newState.log, logEntry];
+           }
+           shouldBroadcast = true;
+           break;
+        
+        case 'ACTION_RESET_GAME':
+           // Reset for new round but keep players and connections
+           newState.currentPhase = GamePhase.LOBBY;
+           newState.votes = {};
+           newState.centerCards = [];
+           newState.log = [];
+           newState.gameResult = undefined;
+           // Reset player roles but keep seats
+           newState.players = newState.players.map(p => ({
+               ...p,
+               role: null,
+               initialRole: null
+           }));
+           // Also reset local state bits that aren't in gameState
+           setVoteConfirmed(false);
+           setGameDeck([]);
            shouldBroadcast = true;
            break;
       }
@@ -341,7 +389,15 @@ const App: React.FC = () => {
              const pid = generateId();
              myIdRef.current = pid; 
 
-             const newPlayer: Player = { id: pid, name: playerName.trim(), seatNumber: null, role: null, initialRole: null, isHost: false };
+             const newPlayer: Player = { 
+                 id: pid, 
+                 name: playerName.trim(), 
+                 color: getRandomColor(), // Assign color
+                 seatNumber: null, 
+                 role: null, 
+                 initialRole: null, 
+                 isHost: false 
+             };
              setLocalPlayer(newPlayer);
              conn.send({ type: 'HELLO', player: newPlayer });
              setIsConnecting(false);
@@ -350,6 +406,11 @@ const App: React.FC = () => {
            conn.on('data', (data: NetworkMessage) => {
              if (data.type === 'SYNC_STATE') {
                 setGameState(prev => {
+                    // Check if we just reset
+                    if (prev.currentPhase !== GamePhase.LOBBY && data.state.currentPhase === GamePhase.LOBBY) {
+                        setVoteConfirmed(false); // Reset local voting state
+                    }
+
                     if (myIdRef.current) {
                         const meOnServer = data.state.players.find(p => p.id === myIdRef.current);
                         if (meOnServer) {
@@ -358,7 +419,8 @@ const App: React.FC = () => {
                                 if (!prevLocal 
                                     || prevLocal.role !== meOnServer.role 
                                     || prevLocal.seatNumber !== meOnServer.seatNumber
-                                    || prevLocal.initialRole !== meOnServer.initialRole) {
+                                    || prevLocal.initialRole !== meOnServer.initialRole
+                                    || prevLocal.color !== meOnServer.color) { // Sync color
                                     return meOnServer;
                                 }
                                 return prevLocal;
@@ -447,6 +509,12 @@ const App: React.FC = () => {
       }
   };
 
+  const handleResetGame = () => {
+     if (!localPlayer?.isHost) return;
+     const msg: NetworkMessage = { type: 'ACTION_RESET_GAME' };
+     handleHostMessage(msg, null);
+  };
+
   const startGame = async () => {
     if (!localPlayer?.isHost) return;
     
@@ -475,7 +543,8 @@ const App: React.FC = () => {
         currentPhase: GamePhase.ROLE_REVEAL, 
         timer: 5, 
         votes: {},
-        gameResult: undefined
+        gameResult: undefined,
+        log: [] // Clear log on start
     };
     
     setGameState(newState);
@@ -606,6 +675,18 @@ const App: React.FC = () => {
     }
   }, [gameState.currentPhase, localPlayer?.isHost]);
 
+  // --- Auto Vote Completion ---
+  useEffect(() => {
+      if (!localPlayer?.isHost) return;
+      if (gameState.currentPhase === GamePhase.DAY_VOTING) {
+          const playerCount = gameState.players.length;
+          const voteCount = Object.keys(gameState.votes).length;
+          if (voteCount > 0 && voteCount === playerCount) {
+              processVotingResults();
+          }
+      }
+  }, [gameState.votes, gameState.currentPhase, localPlayer?.isHost]);
+
 
   // Host Action: Advance Night
   const advanceNightPhase = () => {
@@ -716,21 +797,31 @@ const App: React.FC = () => {
                         onClick={() => canSit && claimSeat(seat.id)}
                         disabled={isOccupied && !isMe}
                         className={`absolute w-16 h-16 -ml-8 -mt-8 rounded-full border-2 flex flex-col items-center justify-center transition-all duration-300
-                            ${isMe ? 'bg-ink text-paper border-ink scale-110 z-20 shadow-sketch-lg' : ''}
-                            ${isOccupied && !isMe ? 'bg-paperDark text-ink border-ink z-10' : ''}
+                            ${isMe ? 'border-ink scale-110 z-20 shadow-sketch-lg' : ''}
+                            ${isOccupied && !isMe ? 'border-ink z-10' : ''}
                             ${!isOccupied ? 'bg-paper border-dashed border-ink/40 text-ink/40 hover:border-ink hover:text-ink hover:bg-white cursor-pointer' : ''}
                         `}
-                        style={{ left: `calc(50% + ${seat.x}px)`, top: `calc(50% + ${seat.y}px)` }}
+                        style={{ 
+                            left: `calc(50% + ${seat.x}px)`, 
+                            top: `calc(50% + ${seat.y}px)`,
+                            backgroundColor: isOccupied ? (player.color || '#e8e0d2') : undefined,
+                            color: isOccupied ? '#f5f0e6' : undefined
+                        }}
                       >
                           {isOccupied ? (
                               <>
-                                <span className="font-woodcut text-lg leading-none">{player.name.charAt(0)}</span>
-                                <span className="text-[8px] uppercase font-bold max-w-full overflow-hidden text-ellipsis whitespace-nowrap px-1">{player.id === 'host' ? '房主' : (isMe ? '我' : player.name)}</span>
+                                <span className="font-woodcut text-2xl leading-none drop-shadow-md">{player.name.charAt(0)}</span>
+                                {/* Improved Name Label: Wider, breaks word if needed, ensures visibility */}
+                                <div className="absolute -bottom-6 w-24 text-center">
+                                    <span className="text-[10px] uppercase font-bold bg-paper border border-ink text-ink px-1.5 py-0.5 rounded shadow-sm break-words leading-tight block">
+                                        {player.id === 'host' ? '房主' : (isMe ? `${player.name} (我)` : player.name)}
+                                    </span>
+                                </div>
                               </>
                           ) : (
                               <span className="font-woodcut text-sm">{seat.id}号</span>
                           )}
-                          {player?.isHost && <div className="absolute -top-1 -right-1 bg-rust text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center border border-paper">H</div>}
+                          {player?.isHost && <div className="absolute -top-1 -right-1 bg-rust text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center border border-paper z-30">H</div>}
                       </button>
                   );
               })}
@@ -870,13 +961,23 @@ const App: React.FC = () => {
         {gameState.speakerId && (
             <div className="p-8 bg-paperDark border-sketch shadow-sketch animate-float max-w-md w-full mb-10">
                 <p className="text-xs uppercase tracking-widest text-rust font-bold mb-2">古老的灵魂指定发言人</p>
-                <div className="w-16 h-16 bg-ink text-paper rounded-full flex items-center justify-center font-woodcut text-3xl mx-auto mb-4 border-4 border-paper">
+                <div 
+                    className="w-16 h-16 bg-ink text-paper rounded-full flex items-center justify-center font-woodcut text-3xl mx-auto mb-4 border-4 border-paper"
+                    style={{ 
+                        backgroundColor: gameState.players.find(p => p.id === gameState.speakerId)?.color,
+                        color: '#fff'
+                    }}
+                >
                     {gameState.players.find(p => p.id === gameState.speakerId)?.name.charAt(0)}
                 </div>
                 <div className="font-woodcut text-3xl text-ink mb-2">
                     {gameState.players.find(p => p.id === gameState.speakerId)?.name || 'Unknown'}
                 </div>
-                <p className="text-sm text-ink/60 italic font-serif">"请从这位玩家开始，顺时针进行陈述..."</p>
+                <p className="text-sm text-ink/60 italic font-serif leading-relaxed">
+                    请从这位玩家开始，<br/>
+                    <strong className="text-rust">顺时针</strong> 进行 <strong className="text-rust">三轮</strong> 陈述。<br/>
+                    <span className="text-xs opacity-70">(Three rounds of clockwise discussion)</span>
+                </p>
             </div>
         )}
 
@@ -919,7 +1020,10 @@ const App: React.FC = () => {
                         `}
                         style={{ borderRadius: '255px 15px 225px 15px / 15px 225px 15px 255px' }}
                     >
-                        <div className="w-12 h-12 bg-ink text-paper rounded-full mb-2 flex items-center justify-center border-2 border-transparent">
+                        <div 
+                            className="w-12 h-12 bg-ink text-paper rounded-full mb-2 flex items-center justify-center border-2 border-transparent shadow-md"
+                            style={{ backgroundColor: p.color, color: '#fff' }}
+                        >
                             <span className="text-xl font-woodcut">{p.name.charAt(0)}</span>
                         </div>
                         <div className="font-woodcut text-base text-ink">{p.name}</div>
@@ -948,16 +1052,16 @@ const App: React.FC = () => {
             ) : (
                 <div className="text-center p-4 bg-paper border-sketch">
                     <p className="font-woodcut text-rust text-xl">已锁定 (Locked)</p>
-                    <p className="text-xs text-inkDim">等待其他人...</p>
+                    <p className="text-xs text-inkDim">
+                        {Object.keys(gameState.votes).length} / {gameState.players.length} 已投票...
+                    </p>
                 </div>
             )}
-
-            {localPlayer?.isHost && (
-                <div className="pt-4 border-t border-ink/20">
-                     <p className="text-center text-xs mb-2 text-inkDim">已投票: {Object.keys(gameState.votes).length} / {gameState.players.length}</p>
-                     <Button fullWidth variant="primary" onClick={() => hostTriggerPhase(GamePhase.DAY_RESULTS)}>
-                        <span className="text-lg">公布结果 (Reveal Results)</span>
-                     </Button>
+            
+            {/* Host button backup in case auto-trigger fails or for explicit control */}
+            {localPlayer?.isHost && Object.keys(gameState.votes).length !== gameState.players.length && (
+                <div className="pt-4 border-t border-ink/20 text-center">
+                    <p className="text-xs mb-2 text-inkDim">等待全员投票自动结算...</p>
                 </div>
             )}
         </div>
@@ -968,21 +1072,18 @@ const App: React.FC = () => {
       const result = gameState.gameResult;
       if (!result) return <div className="p-10">Calculating...</div>;
 
-      const isWinner = result.winners.some(team => {
-          // Visual check only
-          return true; 
-      });
-
       return (
           <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20 animate-fade-in-up">
-              <div className="text-center mb-8 mt-4 p-6 bg-paper border-sketch shadow-sketch-lg">
+              {/* Header: Result */}
+              <div className="text-center mb-8 mt-4 p-6 bg-paper border-sketch shadow-sketch-lg w-full max-w-2xl">
                   <h2 className="text-2xl font-woodcut text-ink mb-2">结局 (Finale)</h2>
-                  <div className="text-4xl font-bold text-rust mb-4 leading-tight">{result.winningReason}</div>
+                  <div className="text-3xl md:text-4xl font-bold text-rust mb-4 leading-tight">{result.winningReason}</div>
                   <div className="text-sm font-mono text-inkDim uppercase tracking-widest border-t border-ink/20 pt-2">
                       Winning Team: {result.winners.join(', ')}
                   </div>
               </div>
               
+              {/* Players Grid: Final Roles */}
               <div className="w-full max-w-5xl grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6 mb-12">
                   {gameState.players.map(p => {
                       const isDead = result.deadPlayerIds.includes(p.id);
@@ -1000,6 +1101,12 @@ const App: React.FC = () => {
                                   disabled={isDead}
                               />
                               <div className="mt-2 text-center">
+                                  <div 
+                                      className="inline-flex items-center justify-center px-3 py-1 rounded-full text-xs font-bold text-white mb-1"
+                                      style={{ backgroundColor: p.color }}
+                                  >
+                                      {p.name.charAt(0)}
+                                  </div>
                                   <div className="font-bold text-ink">{p.name}</div>
                                   <div className="text-xs text-inkDim">{isDead ? '已处决 (Executed)' : '幸存 (Survived)'}</div>
                               </div>
@@ -1008,6 +1115,7 @@ const App: React.FC = () => {
                   })}
               </div>
 
+               {/* Center Cards */}
                <div className="w-full max-w-2xl text-center mb-10">
                    <h3 className="text-xl font-woodcut mb-4 text-inkDim">底牌揭示 (Center Cards)</h3>
                    <div className="flex justify-center gap-4">
@@ -1017,9 +1125,58 @@ const App: React.FC = () => {
                    </div>
                </div>
                
+               {/* --- GAME REVIEW SECTION --- */}
+               <div className="w-full max-w-4xl bg-paperDark border-sketch p-6 mb-20 space-y-6">
+                   <h3 className="text-2xl font-woodcut text-center border-b border-ink/10 pb-4">复盘 (Review)</h3>
+                   
+                   {/* 1. Identity Changes */}
+                   <div>
+                       <h4 className="font-bold text-lg mb-4 text-ink">身份流变 (Identity Changes)</h4>
+                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {gameState.players.map(p => {
+                              const changed = p.initialRole !== p.role;
+                              return (
+                                  <div key={p.id} className={`flex justify-between items-center p-3 rounded border ${changed ? 'bg-paper border-rust' : 'bg-paper/50 border-ink/10'}`}>
+                                      <div className="flex items-center gap-2">
+                                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white" style={{backgroundColor: p.color}}>{p.seatNumber}</div>
+                                          <span>{p.name}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 text-sm">
+                                          <span className={changed ? 'line-through opacity-50' : 'font-bold'}>{ROLES[p.initialRole!].name.split('/')[0]}</span>
+                                          {changed && (
+                                              <>
+                                                <span>→</span>
+                                                <span className="font-bold text-rust">{ROLES[p.role!].name.split('/')[0]}</span>
+                                              </>
+                                          )}
+                                      </div>
+                                  </div>
+                              );
+                          })}
+                       </div>
+                   </div>
+
+                   {/* 2. Night Log */}
+                   <div>
+                       <h4 className="font-bold text-lg mb-4 text-ink">时间回溯 (Timeline)</h4>
+                       <div className="bg-paper p-4 rounded border border-ink/10 space-y-2 text-sm font-mono h-48 overflow-y-auto custom-scrollbar">
+                           {gameState.log.length > 0 ? (
+                               gameState.log.map((entry, i) => (
+                                   <div key={i} className="border-b border-dashed border-ink/10 pb-1 last:border-0">
+                                       <span className="opacity-50 mr-3">[{i+1}]</span>
+                                       {entry}
+                                   </div>
+                               ))
+                           ) : (
+                               <div className="text-center italic opacity-50 py-4">平静的夜晚，没有行动发生...</div>
+                           )}
+                       </div>
+                   </div>
+               </div>
+               
                {localPlayer?.isHost && (
                     <div className="fixed bottom-6 w-full max-w-md px-6 z-20">
-                         <Button fullWidth onClick={() => window.location.reload()}>
+                         <Button fullWidth onClick={handleResetGame}>
                             <span className="text-lg">再来一局 (New Ritual)</span>
                          </Button>
                     </div>

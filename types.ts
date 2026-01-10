@@ -34,6 +34,7 @@ export enum RoleTeam {
 export interface Player {
   id: string;
   name: string;
+  color: string; // Visual distinction
   seatNumber: number | null; // 1-based index
   role: RoleType | null;
   initialRole: RoleType | null; // For Insomniac checking and Review
@@ -85,4 +86,5 @@ export type NetworkMessage =
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
   | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
   | { type: 'ACTION_NIGHT_ACTION'; actionType: string; actorId: string; targets: (string | number)[] }
-  | { type: 'ACTION_GAME_OVER'; result: GameResult }; 
+  | { type: 'ACTION_RESET_GAME' } // New action for synchronized restart
+  | { type: 'ACTION_GAME_OVER'; result: GameResult };
