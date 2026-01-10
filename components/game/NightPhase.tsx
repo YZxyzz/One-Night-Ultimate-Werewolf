@@ -124,7 +124,10 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   
   const [hasActed, setHasActed] = useState(false);
   const isMyTurn = currentPlayer.initialRole === currentNightRole;
-  const hasSpokenRef = useRef(false);
+  
+  // CRITICAL FIX: Use a Ref to block clicks synchronously. 
+  // State updates are async, so fast clicks could bypass 'hasActed'.
+  const actionLockRef = useRef(false);
 
   const [seerMode, setSeerMode] = useState<'CHOICE' | 'PLAYER' | 'CENTER'>('CHOICE');
   const [seerSelectedCenterIndices, setSeerSelectedCenterIndices] = useState<number[]>([]);
@@ -133,7 +136,8 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   const [resultData, setResultData] = useState<{ title: string, cards: {role: RoleType | null, label: string}[] } | null>(null);
 
   useEffect(() => {
-    hasSpokenRef.current = false;
+    // Reset everything for the new role phase
+    actionLockRef.current = false;
     setHasActed(false); 
     setResultData(null); 
     setSeerMode('CHOICE'); 
@@ -142,6 +146,10 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   }, [gameState.currentNightRoleIndex]);
 
   const confirmTurn = () => {
+      if (actionLockRef.current && !hasActed) {
+          // If we are locked but state hasn't updated yet, ensure state reflects it
+          setHasActed(true);
+      }
       setHasActed(true);
       onAction('CONFIRM_TURN', []);
   };
@@ -149,8 +157,12 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   // --- ACTION HANDLERS ---
 
   const handleSeerAction = () => {
+    if (hasActed || resultData || actionLockRef.current) return;
+    
     if (seerMode === 'PLAYER') {
        if (selectedTargetIds.length !== 1) return;
+       actionLockRef.current = true; // Lock immediately
+       
        const targetId = selectedTargetIds[0];
        const targetPlayer = gameState.players.find(p => p.id === targetId);
        
@@ -161,10 +173,11 @@ const NightPhase: React.FC<NightPhaseProps> = ({
              title: `玩家 ${targetPlayer.name} 的身份`,
              cards: [{ role: targetPlayer.role, label: targetPlayer.name }]
          });
-         // CRITICAL FIX: Do NOT call confirmTurn() here. Wait for user to close overlay.
+         // Do NOT confirm turn yet. User must read the card.
        }
     } else if (seerMode === 'CENTER') {
        if (seerSelectedCenterIndices.length !== 2) return;
+       actionLockRef.current = true; // Lock immediately
        
        onAction('SEER_VIEW_CENTER', seerSelectedCenterIndices);
 
@@ -178,12 +191,17 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                { role: c2, label: `底牌 ${seerSelectedCenterIndices[1] + 1}` }
            ]
        });
-       // CRITICAL FIX: Do NOT call confirmTurn() here.
+       // Do NOT confirm turn yet.
     }
   };
 
   const handleRobberAction = () => {
+    // BUG FIX: Strict check on actionLockRef prevents double execution
+    if (hasActed || resultData || actionLockRef.current) return;
+
     if (selectedTargetIds.length !== 1) return;
+    actionLockRef.current = true; // Lock immediately
+    
     const targetId = selectedTargetIds[0];
     const targetPlayer = gameState.players.find(p => p.id === targetId);
     
@@ -194,27 +212,36 @@ const NightPhase: React.FC<NightPhaseProps> = ({
            title: `你抢到了 ${targetPlayer.name} 的身份`,
            cards: [{ role: targetPlayer.role, label: "你现在是 (You are now)" }]
        });
-       // CRITICAL FIX: Do NOT call confirmTurn() here.
+       // Do NOT confirm turn yet. User must read the card.
     }
   };
 
   const handleTroublemakerAction = () => {
+    if (hasActed || actionLockRef.current) return;
+
     if (selectedTargetIds.length !== 2) return;
+    actionLockRef.current = true; // Lock immediately
+    
     onAction('TROUBLEMAKER_SWAP', selectedTargetIds);
-    // Troublemaker gets no info, so confirm immediately is fine, but UX feels better with a delay.
-    // Let's force a small local pause or just confirm. 
-    // For consistency, let's just confirm immediately for now as they have no overlay.
-    confirmTurn();
+    confirmTurn(); // Troublemaker gets no info, so end turn immediately
   };
   
   const handleDrunkAction = () => {
+      if (hasActed || actionLockRef.current) return;
+
       if (seerSelectedCenterIndices.length !== 1) return;
+      actionLockRef.current = true; // Lock immediately
+      
       onAction('DRUNK_SWAP', [seerSelectedCenterIndices[0]]);
-      confirmTurn();
+      confirmTurn(); // Drunk doesn't see the card, so end turn immediately
   };
 
   const handleLoneWolfAction = () => {
+      if (hasActed || resultData || actionLockRef.current) return;
+
       if (seerSelectedCenterIndices.length !== 1) return;
+      actionLockRef.current = true; // Lock immediately
+
       const idx = seerSelectedCenterIndices[0];
       const card = gameState.centerCards[idx];
       
@@ -224,18 +251,13 @@ const NightPhase: React.FC<NightPhaseProps> = ({
           title: "底牌信息",
           cards: [{ role: card, label: `底牌 ${idx + 1}` }]
       });
-      // CRITICAL FIX: Do NOT call confirmTurn() here.
+      // Do NOT confirm turn yet.
   };
 
   const handleInsomniacAction = () => {
-      // NOTE: Insomniac sees their FINAL role.
-      // We rely on 'currentPlayer.role' being updated via SYNC_STATE from the host *before* this action?
-      // Actually, local logic might lag if host hasn't processed previous swaps yet.
-      // However, in this architecture, roles are updated on Host and synced. 
-      // Assuming 'gameState.players' has the latest truth.
-      
-      // We need to look up OURSELF in the gameState to get the latest server truth, 
-      // rather than relying on the potentially stale 'currentPlayer' prop passed down if the parent didn't update.
+      if (hasActed || resultData || actionLockRef.current) return;
+      actionLockRef.current = true; // Lock immediately
+
       const me = gameState.players.find(p => p.id === currentPlayer.id);
       const finalRole = me ? me.role : currentPlayer.role;
 
@@ -243,7 +265,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
           title: "你现在的身份",
           cards: [{ role: finalRole, label: "最终身份 (Final Role)" }]
       });
-      // CRITICAL FIX: Do NOT call confirmTurn() here.
+      // Do NOT confirm turn yet.
   };
 
   // ... renderRadialUI ...
@@ -279,7 +301,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                                       <div 
                                         key={idx}
                                         onClick={() => {
-                                            if (hasActed) return;
+                                            if (hasActed || actionLockRef.current) return;
                                             if (isSelected) {
                                                 setSeerSelectedCenterIndices(prev => prev.filter(i => i !== idx));
                                             } else {
@@ -311,7 +333,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                       
                       const isMe = player.id === currentPlayer.id;
                       const isSelected = selectedTargetIds.includes(player.id);
-                      const canSelect = !isMe && playerSelectLimit > 0 && !hasActed;
+                      const canSelect = !isMe && playerSelectLimit > 0 && !hasActed && !actionLockRef.current;
 
                       return (
                           <button 
@@ -357,7 +379,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
               </div>
 
               <div className="absolute bottom-0 w-full px-6 flex justify-center z-30">
-                  {!hasActed ? (
+                  {!hasActed && !actionLockRef.current ? (
                     <Button 
                       onClick={onConfirm}
                       disabled={(playerSelectLimit > 0 && selectedTargetIds.length !== playerSelectLimit) || (centerSelectLimit > 0 && seerSelectedCenterIndices.length !== centerSelectLimit)}
@@ -429,7 +451,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
       <div className="w-full flex-1 relative z-10">
         {currentNightRole === RoleType.SEER && (
            <>
-             {seerMode === 'CHOICE' && !hasActed && (
+             {seerMode === 'CHOICE' && !hasActed && !actionLockRef.current && (
                <div className="flex flex-col items-center justify-center h-full gap-6 animate-fade-in-up">
                   <button onClick={() => { setSeerMode('PLAYER'); setSelectedTargetIds([]); }} className="group sketch-border p-6 w-64 flex items-center justify-center gap-4 hover:bg-white transition-all bg-paper shadow-md">
                      <span className="text-4xl">👤</span>
@@ -441,9 +463,9 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                   </button>
                </div>
              )}
-             {seerMode === 'PLAYER' && !hasActed && renderRadialUI("选择一位玩家查看身份", 1, 0, handleSeerAction, "揭示真身")}
-             {seerMode === 'CENTER' && !hasActed && renderRadialUI("选择两张底牌查看", 0, 2, handleSeerAction, "翻开底牌")}
-             {seerMode !== 'CHOICE' && !hasActed && (
+             {seerMode === 'PLAYER' && !hasActed && !actionLockRef.current && renderRadialUI("选择一位玩家查看身份", 1, 0, handleSeerAction, "揭示真身")}
+             {seerMode === 'CENTER' && !hasActed && !actionLockRef.current && renderRadialUI("选择两张底牌查看", 0, 2, handleSeerAction, "翻开底牌")}
+             {seerMode !== 'CHOICE' && !hasActed && !actionLockRef.current && (
                  <div className="absolute bottom-20 w-full text-center">
                     <button onClick={() => setSeerMode('CHOICE')} className="text-ink/50 text-sm underline">Back to Options</button>
                  </div>
@@ -451,9 +473,9 @@ const NightPhase: React.FC<NightPhaseProps> = ({
            </>
         )}
 
-        {currentNightRole === RoleType.ROBBER && !hasActed && renderRadialUI("选择一位玩家(非自己)交换身份", 1, 0, handleRobberAction, "实施盗窃")}
-        {currentNightRole === RoleType.TROUBLEMAKER && !hasActed && renderRadialUI("选择两位玩家交换他们的牌", 2, 0, handleTroublemakerAction, "制造混乱")}
-        {currentNightRole === RoleType.DRUNK && !hasActed && renderRadialUI("选择一张底牌与自己交换", 0, 1, handleDrunkAction, "盲目交换")}
+        {currentNightRole === RoleType.ROBBER && !hasActed && !actionLockRef.current && renderRadialUI("选择一位玩家(非自己)交换身份", 1, 0, handleRobberAction, "实施盗窃")}
+        {currentNightRole === RoleType.TROUBLEMAKER && !hasActed && !actionLockRef.current && renderRadialUI("选择两位玩家交换他们的牌", 2, 0, handleTroublemakerAction, "制造混乱")}
+        {currentNightRole === RoleType.DRUNK && !hasActed && !actionLockRef.current && renderRadialUI("选择一张底牌与自己交换", 0, 1, handleDrunkAction, "盲目交换")}
 
         {currentNightRole === RoleType.WEREWOLF && (
            <div className="w-full h-full flex flex-col items-center justify-center">
@@ -474,11 +496,11 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                                </div>
                             ))}
                           </div>
-                          {!hasActed ? (<Button onClick={confirmTurn} variant="danger" fullWidth>确认同伴 (Ready)</Button>) : <div className="text-danger font-bold">已确认</div>}
+                          {!hasActed && !actionLockRef.current ? (<Button onClick={confirmTurn} variant="danger" fullWidth>确认同伴 (Ready)</Button>) : <div className="text-danger font-bold">已确认</div>}
                        </div>
                     );
                   } else {
-                    return !hasActed ? renderRadialUI("你是孤狼。你可以查看一张底牌。", 0, 1, handleLoneWolfAction, "窥探底牌") : null;
+                    return !hasActed && !actionLockRef.current ? renderRadialUI("你是孤狼。你可以查看一张底牌。", 0, 1, handleLoneWolfAction, "窥探底牌") : null;
                   }
               })()}
            </div>
@@ -486,7 +508,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
 
         {currentNightRole === RoleType.INSOMNIAC && (
            <div className="h-full flex flex-col items-center justify-center">
-              {!hasActed ? (<Button onClick={handleInsomniacAction} className="shadow-sketch-lg">检查我的身份</Button>) : null}
+              {!hasActed && !actionLockRef.current ? (<Button onClick={handleInsomniacAction} className="shadow-sketch-lg">检查我的身份</Button>) : null}
            </div>
         )}
         
@@ -511,7 +533,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                           ));
                       })()}
                   </div>
-                  {!hasActed ? (<Button onClick={confirmTurn} fullWidth>确认 (Done)</Button>) : (<div className="text-inkDim mt-4 italic">等待天亮...</div>)}
+                  {!hasActed && !actionLockRef.current ? (<Button onClick={confirmTurn} fullWidth>确认 (Done)</Button>) : (<div className="text-inkDim mt-4 italic">等待天亮...</div>)}
                </div>
            </div>
         )}
@@ -528,7 +550,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
           />
       )}
       
-      {hasActed && !resultData && (<div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-40 bg-paper border-sketch px-8 py-4 shadow-xl animate-fade-in-up"><h3 className="text-2xl font-woodcut text-ink mb-1 text-center">操作完成</h3><p className="text-xs text-inkDim uppercase tracking-widest text-center">等待其他人...</p></div>)}
+      {(hasActed || actionLockRef.current) && !resultData && (<div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-40 bg-paper border-sketch px-8 py-4 shadow-xl animate-fade-in-up"><h3 className="text-2xl font-woodcut text-ink mb-1 text-center">操作完成</h3><p className="text-xs text-inkDim uppercase tracking-widest text-center">等待其他人...</p></div>)}
     </div>
   );
 };

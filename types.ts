@@ -83,10 +83,12 @@ export interface GameState {
 export type NetworkMessage = 
   | { type: 'HELLO'; player: Player } 
   | { type: 'SYNC_STATE'; state: GameState } 
-  | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
+  | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number | null } // Allow null for standing up
   | { type: 'ACTION_KICK'; targetId: string } // Host kicks a player
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
   | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
   | { type: 'ACTION_NIGHT_ACTION'; actionType: string; actorId: string; targets: (string | number)[] }
   | { type: 'ACTION_RESET_GAME' } // New action for synchronized restart
-  | { type: 'ACTION_GAME_OVER'; result: GameResult };
+  | { type: 'ACTION_GAME_OVER'; result: GameResult }
+  | { type: 'ACTION_UPDATE_SETTINGS'; settings: GameState['settings'] } // Host updates settings
+  | { type: 'ACTION_NOTIFICATION'; message: string; subMessage?: string }; // Global toast

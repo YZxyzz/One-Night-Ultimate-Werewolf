@@ -16,8 +16,8 @@ interface RuleBookProps {
 const STRATEGIES = {
     overview: [
         { title: "核心：身份流动", text: "一夜狼人杀和传统狼人杀最大的区别在于：你闭眼时的身份，不一定是你睁眼时的身份。所有的逻辑推理都必须建立在“我的牌可能被换了”以及“别人的牌可能也被换了”这个基础之上。" },
-        { title: "好人不用“挡刀”", text: "本游戏没有夜晚杀人环节，只有白天一次投票。好人阵营的目标是【投死至少一只狼】。平民不需要像传统游戏那样替神职去死。平民的任务是提供清晰的逻辑，或者通过适度的“诈身份”来逼出狼人的破绽。" },
-        { title: "投票即决战", text: "一旦有狼人被投出，狼队即刻判负（除非有皮匠等特殊情况）。如果最高票平票，所有平票者都会死。利用这个规则，如果你们无法确定谁是狼，可以尝试让多个人平票（前提是里面大概率有狼）。" },
+        { title: "全员好人怎么赢？", text: "如果你们认为场上没有狼人（所有狼牌都在底牌中），你们需要达成【平安夜】。方法是：所有人保持平票（例如每人都得1票）。本游戏的特殊规则是：如果所有人平票，且每人至少得一票，则【无人死亡】，好人直接获胜。" },
+        { title: "投票即决战", text: "一旦有狼人被投出，狼队即刻判负（除非有皮匠等特殊情况）。如果最高票平票（但不是全员平票），所有平票者都会死。利用这个规则，如果你们无法确定谁是狼，可以尝试让多个人平票（前提是里面大概率有狼）。" },
     ],
     roles: [
         { 
@@ -80,7 +80,7 @@ const STRATEGIES = {
             title: "村民：并不只是看客",
             sections: [
                 { subtitle: "适当诈身份", text: "虽然你没有技能，但你可以假装有。例如，你可以假装是捣蛋鬼，说“我换了A和B”，看他们的反应。如果有狼人就在A或B中，他可能会露出马脚。注意：一定要在投票前澄清你的真实身份（脱衣服），以免误导好人投错票。" },
-                { subtitle: "寻找逻辑漏洞", text: "你的武器是耳朵。仔细听谁的发言前后矛盾，谁在跟风，谁不敢看别人的眼睛。" }
+                { subtitle: "平安夜战术", text: "如果你高度怀疑场上没有狼人，可以号召大家按座位顺序互投（每个人都吃一票）。如果达成全员平票，判定为无人死亡，好人获胜。" }
             ]
         }
     ]
@@ -338,8 +338,8 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
                     <br/><span className="text-sm text-inkDim italic">Voting: Count to 3. Point. Majority dies.</span>
                   </li>
                   <li>
-                    <strong>平票：</strong> 若最高票平票，所有平票者一起死。
-                    <br/><span className="text-sm text-inkDim italic">Ties: If max votes are tied, all tied players die.</span>
+                    <strong>平票：</strong> 若最高票平票，所有平票者一起死。但如果全员平票（无人弃票），则无人死亡。
+                    <br/><span className="text-sm text-inkDim italic">Ties: Everyone tied dies. EXCEPT if everyone gets 1 vote, then NO ONE dies.</span>
                   </li>
                 </ul>
               </div>
