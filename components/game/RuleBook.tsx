@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { ROLES } from '../../constants';
 import { RoleType, RoleTeam } from '../../types';
 import Button from '../ui/Button';
+import PlayingCard from '../ui/PlayingCard';
 import { geminiService } from '../../services/geminiService';
 
 interface RuleBookProps {
@@ -16,12 +17,16 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
   const [answer, setAnswer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'identity' | 'overview' | 'roles' | 'glossary'>('overview');
+  const [isIdentityRevealed, setIsIdentityRevealed] = useState(false); // New state for Safe Peek
   
   const [wasOpen, setWasOpen] = useState(false);
 
   useEffect(() => {
     if (isOpen && !wasOpen) {
       setWasOpen(true);
+      // Reset reveal state on open
+      setIsIdentityRevealed(false);
+      
       if (myRole) {
         setActiveTab('identity');
       } else if (activeRoleTypes.length > 0) {
@@ -93,7 +98,6 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
     const count = roleCounts[type];
     const colorClass = getTeamColor(role.team);
     
-    // Fixed: 'sketch-border' -> 'border-sketch'
     return (
       <div key={type} className={`border-sketch p-5 ${colorClass} relative overflow-hidden mb-4 shadow-sm bg-paper`}>
          <div className="flex justify-between items-start mb-3 relative z-10">
@@ -145,12 +149,10 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in-up">
-      {/* Fixed: 'sketch-border' -> 'border-sketch' */}
       <div className="bg-paper text-ink w-full max-w-4xl max-h-[90vh] overflow-hidden border-sketch relative flex flex-col shadow-2xl">
         
         {/* Header */}
         <div className="p-5 border-b-2 border-ink/10 flex justify-between items-center bg-paperDark flex-none relative">
-          {/* Decorative Corner */}
           <div className="absolute top-2 left-2 w-3 h-3 border-t-2 border-l-2 border-ink opacity-30"></div>
           <div className="absolute top-2 right-2 w-3 h-3 border-t-2 border-r-2 border-ink opacity-30"></div>
 
@@ -178,25 +180,38 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
         <div className="flex-1 overflow-y-auto p-6 min-h-0 custom-scrollbar bg-paper relative">
           <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[url('https://www.transparenttextures.com/patterns/ag-square.png')]"></div>
           
-          {/* TAB: IDENTITY */}
+          {/* TAB: IDENTITY (SAFE REVEAL UI) */}
           {activeTab === 'identity' && myRole && (
-            <div className="space-y-6 animate-fade-in-up relative z-10">
-              <div className="text-center mb-6">
-                 <p className="text-2xl font-woodcut text-ink">初始身份</p>
-                 <p className="text-xs text-inkDim font-mono mt-1 uppercase tracking-widest">Starting Role - Identity May Change</p>
+            <div className="space-y-6 animate-fade-in-up relative z-10 h-full flex flex-col items-center">
+              <div className="text-center mb-2">
+                 <p className="text-2xl font-woodcut text-ink">你的初始身份</p>
+                 <p className="text-xs text-inkDim font-mono mt-1 uppercase tracking-widest">Initial Role</p>
+                 <p className="text-xs text-red-700 bg-red-100/50 inline-block px-2 py-1 rounded mt-2 border border-red-200">
+                    注意：此身份可能已被交换
+                 </p>
               </div>
-              <div className="transform scale-100 md:scale-105 origin-top">
-                {renderRoleCard(myRole, false)}
+
+              <div 
+                className="cursor-pointer group flex flex-col items-center gap-4"
+                onClick={() => setIsIdentityRevealed(!isIdentityRevealed)}
+              >
+                  <PlayingCard 
+                      role={myRole} 
+                      isRevealed={isIdentityRevealed} 
+                      label={isIdentityRevealed ? ROLES[myRole].name.split('/')[0] : "点击翻开 / Tap to Reveal"} 
+                      size="lg" 
+                  />
+                  
+                  <div className="text-sm font-bold animate-pulse text-inkDim">
+                      {isIdentityRevealed ? "点击隐藏 (Tap to Hide)" : "点击卡牌查看 (Tap Card to View)"}
+                  </div>
               </div>
-              <div className="flex justify-center mt-6">
-                 <div className="border-4 border-ink rounded-lg shadow-xl overflow-hidden relative group transform rotate-1 hover:rotate-0 transition-transform duration-500">
-                   <img 
-                      src={ROLES[myRole].imagePlaceholder} 
-                      alt="Role" 
-                      className="w-48 h-64 object-cover woodcut-filter opacity-90 group-hover:opacity-100 transition-opacity"
-                   />
-                 </div>
-              </div>
+
+              {isIdentityRevealed && (
+                  <div className="w-full max-w-md mt-6 animate-fade-in">
+                      {renderRoleCard(myRole, false)}
+                  </div>
+              )}
             </div>
           )}
 

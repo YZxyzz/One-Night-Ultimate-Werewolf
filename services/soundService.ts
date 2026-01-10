@@ -1,6 +1,8 @@
+
 export class SoundService {
   private ctx: AudioContext | null = null;
   private droneNodes: AudioNode[] = [];
+  private masterGain: GainNode | null = null;
   private isAmbiencePlaying = false;
 
   get context() {
@@ -19,8 +21,6 @@ export class SoundService {
 
   /**
    * Generates a "Mysterious Void" ambience.
-   * Uses Sine waves for deep bass, filtered Sawtooth for texture, 
-   * and a Delay feedback loop to simulate a large cavernous space.
    */
   startAmbience() {
     if (this.isAmbiencePlaying) return;
@@ -32,11 +32,10 @@ export class SoundService {
     const now = ctx.currentTime;
     
     // --- Master Chain ---
-    // Master Volume: Keep it subtle so voice can be heard
-    const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(0, now);
-    masterGain.gain.linearRampToValueAtTime(0.15, now + 2); // Fade in
-    masterGain.connect(ctx.destination);
+    this.masterGain = ctx.createGain();
+    this.masterGain.gain.setValueAtTime(0, now);
+    this.masterGain.gain.linearRampToValueAtTime(0.15, now + 2); // Fade in
+    this.masterGain.connect(ctx.destination);
 
     // --- FX Chain (Delay/Echo) ---
     const delay = ctx.createDelay();
@@ -55,12 +54,9 @@ export class SoundService {
     delayFilter.connect(delay);
     
     // Connect Delay to Master
-    delay.connect(masterGain);
+    delay.connect(this.masterGain);
 
     // --- Oscillators (The Sound Source) ---
-    
-    // Chord: A Minor (A2, C3, E3) with a deep bass root (A1)
-    // Frequencies: A1=55, A2=110, C3=130.81, E3=164.81
     const frequencies = [55, 110, 130.81];
 
     frequencies.forEach((freq, i) => {
@@ -68,90 +64,102 @@ export class SoundService {
       const gain = ctx.createGain();
       const filter = ctx.createBiquadFilter();
 
-      // Type: Sine is deep and smooth. Triangle adds a bit of mystery.
       osc.type = i === 0 ? 'sine' : 'triangle'; 
       osc.frequency.value = freq;
 
-      // Filter: Lowpass to remove harshness, making it sound "distant"
       filter.type = 'lowpass';
       filter.frequency.value = 400; // Start dark
 
-      // LFO for "Breathing" effect (modulates filter cutoff)
       const lfo = ctx.createOscillator();
       lfo.type = 'sine';
-      lfo.frequency.value = 0.1 + (Math.random() * 0.1); // Slow breath (10s period)
+      lfo.frequency.value = 0.1 + (Math.random() * 0.1); 
       
       const lfoGain = ctx.createGain();
-      lfoGain.gain.value = 150; // Modulate filter by +/- 150Hz
+      lfoGain.gain.value = 150; 
 
       lfo.connect(lfoGain);
       lfoGain.connect(filter.frequency);
 
-      // Wiring
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(masterGain); // Dry signal
-      gain.connect(delay);      // Wet signal (to reverb/delay)
+      gain.connect(this.masterGain!); 
+      gain.connect(delay);      
 
-      // Start
       osc.start(now);
       lfo.start(now);
 
-      // Volume settings
-      // Bass is louder, harmonies are quieter
       const vol = i === 0 ? 0.8 : 0.3;
       gain.gain.value = vol;
 
-      // Keep references to stop later
       this.droneNodes.push(osc, lfo, gain, filter, lfoGain);
     });
 
-    this.droneNodes.push(masterGain, delay, feedback, delayFilter);
+    this.droneNodes.push(this.masterGain, delay, feedback, delayFilter);
     this.isAmbiencePlaying = true;
   }
 
   stopAmbience() {
     const now = this.context.currentTime;
+    // Fade out logic if masterGain exists
+    if (this.masterGain) {
+        try {
+            this.masterGain.gain.linearRampToValueAtTime(0, now + 1);
+        } catch(e) {}
+    }
+
     this.droneNodes.forEach(node => {
         if (node instanceof OscillatorNode) {
-            try { 
-              // Ramp down to avoid popping
-              node.stop(now + 1); 
-            } catch(e){}
-        } else if (node instanceof GainNode) {
-           try {
-             node.gain.linearRampToValueAtTime(0, now + 1);
-           } catch(e) {}
+            try { node.stop(now + 1); } catch(e){}
         }
-        // Disconnect after fade out
         setTimeout(() => {
              try { node.disconnect(); } catch(e){}
         }, 1100);
     });
     this.droneNodes = [];
+    this.masterGain = null;
     this.isAmbiencePlaying = false;
+  }
+
+  // --- AUDIO DUCKING (Lowers background volume when Voice plays) ---
+  private fadeAmbience(targetVol: number, duration: number = 0.5) {
+      if (this.masterGain && this.isAmbiencePlaying) {
+          try {
+              const now = this.context.currentTime;
+              this.masterGain.gain.cancelScheduledValues(now);
+              this.masterGain.gain.linearRampToValueAtTime(targetVol, now + duration);
+          } catch(e) {}
+      }
   }
 
   async playAudioData(arrayBuffer: ArrayBuffer): Promise<void> {
     const ctx = this.context;
     try {
+        // 1. Duck Ambience (Lower Volume)
+        this.fadeAmbience(0.05); // Lower to 5%
+
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         
-        // Voice Gain (Boost volume slightly to stand out over ambience)
+        // Voice Gain (Boost volume slightly)
         const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.2; 
+        gainNode.gain.value = 1.5; 
         
         source.connect(gainNode);
         gainNode.connect(ctx.destination);
         
         source.start(0);
         return new Promise((resolve) => {
-          source.onended = () => resolve();
+          source.onended = () => {
+              resolve();
+              // 2. Restore Ambience
+              this.fadeAmbience(0.15); // Back to 15%
+          };
         });
     } catch (e) {
         console.error("Error playing audio buffer", e);
+        // Ensure ambience comes back even on error
+        this.fadeAmbience(0.15);
         return Promise.resolve();
     }
   }

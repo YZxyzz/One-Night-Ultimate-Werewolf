@@ -76,6 +76,7 @@ export interface GameState {
   speakerId?: string; // ID of the player randomly selected to start discussion
   gameResult?: GameResult; // The final calculated result
   log: string[];
+  finishedTurnPlayerIds: string[]; // Track which players have clicked "Confirm" in the current night phase
 }
 
 // Add ACTION_NIGHT_ACTION here
@@ -83,6 +84,7 @@ export type NetworkMessage =
   | { type: 'HELLO'; player: Player } 
   | { type: 'SYNC_STATE'; state: GameState } 
   | { type: 'ACTION_CLAIM_SEAT'; playerId: string; seatNumber: number }
+  | { type: 'ACTION_KICK'; targetId: string } // Host kicks a player
   | { type: 'ACTION_VOTE'; voterId: string; targetId: string }
   | { type: 'ACTION_PHASE_CHANGE'; phase: GamePhase; speakerId?: string }
   | { type: 'ACTION_NIGHT_ACTION'; actionType: string; actorId: string; targets: (string | number)[] }

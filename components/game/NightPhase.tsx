@@ -9,6 +9,7 @@ import { soundService } from '../../services/soundService';
 interface NightPhaseProps {
   gameState: GameState;
   currentPlayer: Player;
+  activeNightSequence: RoleType[];
   onPhaseComplete: () => void; 
   onGodSpeechComplete: () => void; 
   onAction: (actionType: string, targetIds: (string | number)[]) => void;
@@ -55,24 +56,39 @@ const ActionResultOverlay: React.FC<ActionResultOverlayProps> = ({ title, cards,
     );
 };
 
-// --- SUB-COMPONENT: GAME TIPS CAROUSEL ---
+// --- SUB-COMPONENT: GAME TIPS CAROUSEL (INTERACTIVE) ---
 const GameTipsCarousel: React.FC = () => {
     const [index, setIndex] = useState(0);
+    const timerRef = useRef<any>(null);
+
+    const nextTip = () => {
+        setIndex(prev => (prev + 1) % GAME_TIPS.length);
+        resetTimer();
+    };
     
+    const resetTimer = () => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+             setIndex(prev => (prev + 1) % GAME_TIPS.length);
+        }, 6000);
+    };
+
     useEffect(() => {
-        const timer = setInterval(() => {
-            setIndex(prev => (prev + 1) % GAME_TIPS.length);
-        }, 5000);
-        return () => clearInterval(timer);
+        resetTimer();
+        return () => clearInterval(timerRef.current);
     }, []);
 
     return (
-        <div className="absolute bottom-20 w-full px-6 flex justify-center animate-fade-in">
-           <div className="bg-paperDark border-sketch p-4 max-w-md w-full text-center relative shadow-lg">
+        <div className="absolute bottom-20 w-full px-6 flex justify-center animate-fade-in cursor-pointer z-30" onClick={nextTip}>
+           <div className="bg-paperDark border-sketch p-4 max-w-md w-full text-center relative shadow-lg group hover:scale-[1.02] transition-transform">
                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-ink text-paper px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest rounded-sm z-10">
                    生存指南 / Survival Tips
                </div>
-               <p className="font-serif italic text-ink text-sm leading-relaxed transition-all duration-500 min-h-[3em] flex items-center justify-center">
+               
+               {/* Click Hint */}
+               <div className="absolute right-2 top-1/2 -translate-y-1/2 text-ink/10 group-hover:text-ink/30 transition-colors text-2xl font-bold">›</div>
+
+               <p className="font-serif italic text-ink text-sm leading-relaxed transition-all duration-500 min-h-[3em] flex items-center justify-center select-none px-4">
                    {GAME_TIPS[index]}
                </p>
                <div className="flex justify-center gap-1 mt-2">
@@ -80,6 +96,7 @@ const GameTipsCarousel: React.FC = () => {
                        <div key={i} className={`w-1.5 h-1.5 rounded-full transition-colors ${i === index ? 'bg-rust' : 'bg-ink/20'}`}></div>
                    ))}
                </div>
+               <div className="text-[9px] text-inkDim mt-1 opacity-0 group-hover:opacity-100 transition-opacity">点击切换 / Tap for next</div>
            </div>
         </div>
     );
@@ -87,16 +104,16 @@ const GameTipsCarousel: React.FC = () => {
 
 const NightPhase: React.FC<NightPhaseProps> = ({ 
   gameState, 
-  currentPlayer, 
+  currentPlayer,
+  activeNightSequence,
   onAction
 }) => {
-  const currentNightRole = NIGHT_SEQUENCE[gameState.currentNightRoleIndex];
+  // Use the passed active sequence instead of global constant
+  const currentNightRole = activeNightSequence[gameState.currentNightRoleIndex];
   const roleDef = ROLES[currentNightRole];
   
   // State for interaction
   const [hasActed, setHasActed] = useState(false);
-  // NOTE: We now use gameState.timer for global sync, so local timer is removed.
-  
   const isMyTurn = currentPlayer.initialRole === currentNightRole;
   const hasSpokenRef = useRef(false);
 
@@ -112,38 +129,24 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   useEffect(() => {
     // Reset spoken flag when role changes
     hasSpokenRef.current = false;
+    setHasActed(false); // Reset local action state
+    setResultData(null); // Clear previous results
+    setSeerMode('CHOICE'); // Reset seer choice
+    setSelectedTargetIds([]); // Clear selection
+    setSeerSelectedCenterIndices([]); // Clear center selection
   }, [gameState.currentNightRoleIndex]);
 
   useEffect(() => {
-    if (!currentPlayer.isHost || !roleDef) return;
-    if (hasSpokenRef.current) return;
-    
-    const playNarration = async () => {
-        hasSpokenRef.current = true;
-        console.log("Generating narration for:", roleDef.name);
-        
-        // Ensure Audio Context is ready
-        await soundService.init();
-        
-        const text = roleDef.wakeUpText + "。 " + roleDef.actionDescription;
-        
-        // Try Gemini AI Voice first
-        const audioBuffer = await geminiService.generateNarration(text);
-        if (audioBuffer) {
-            await soundService.playAudioData(audioBuffer);
-        } else {
-            // Fallback to Browser Native TTS
-            console.log("Gemini Voice Failed, using fallback TTS");
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'zh-CN';
-            utterance.rate = 0.9;
-            window.speechSynthesis.speak(utterance);
-        }
-    };
-
-    playNarration();
+    // Audio is now triggered at App.tsx level via Effect, but role logic is here.
+    // We intentionally removed the direct generation here to respect the App-level mute state.
   }, [gameState.currentNightRoleIndex, currentPlayer.isHost, roleDef]);
 
+
+  // --- HELPER: CONFIRM TURN & SEND SIGNAL ---
+  const confirmTurn = () => {
+      setHasActed(true);
+      onAction('CONFIRM_TURN', []);
+  };
 
   // --- ACTION HANDLERS ---
 
@@ -151,17 +154,25 @@ const NightPhase: React.FC<NightPhaseProps> = ({
     if (seerMode === 'PLAYER') {
        if (selectedTargetIds.length !== 1) return;
        const targetId = selectedTargetIds[0];
+       // We only confirm actions here, true logic and result storage (for replay) happens in App.tsx
+       // But we need to show local results immediately.
        const targetPlayer = gameState.players.find(p => p.id === targetId);
+       
+       // Send detailed action type for logging
+       onAction('SEER_VIEW_PLAYER', [targetId]);
        
        if (targetPlayer && targetPlayer.role) {
          setResultData({
              title: `玩家 ${targetPlayer.name} 的身份`,
              cards: [{ role: targetPlayer.role, label: targetPlayer.name }]
          });
-         setHasActed(true);
+         confirmTurn();
        }
     } else if (seerMode === 'CENTER') {
        if (seerSelectedCenterIndices.length !== 2) return;
+       
+       onAction('SEER_VIEW_CENTER', seerSelectedCenterIndices);
+
        const c1 = gameState.centerCards[seerSelectedCenterIndices[0]];
        const c2 = gameState.centerCards[seerSelectedCenterIndices[1]];
        
@@ -172,7 +183,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                { role: c2, label: `底牌 ${seerSelectedCenterIndices[1] + 1}` }
            ]
        });
-       setHasActed(true);
+       confirmTurn();
     }
   };
 
@@ -188,20 +199,20 @@ const NightPhase: React.FC<NightPhaseProps> = ({
            title: `你抢到了 ${targetPlayer.name} 的身份`,
            cards: [{ role: targetPlayer.role, label: "你现在的身份" }]
        });
-       setHasActed(true);
+       confirmTurn();
     }
   };
 
   const handleTroublemakerAction = () => {
     if (selectedTargetIds.length !== 2) return;
     onAction('TROUBLEMAKER_SWAP', selectedTargetIds);
-    setHasActed(true);
+    confirmTurn();
   };
   
   const handleDrunkAction = () => {
       if (seerSelectedCenterIndices.length !== 1) return;
       onAction('DRUNK_SWAP', [seerSelectedCenterIndices[0]]);
-      setHasActed(true);
+      confirmTurn();
   };
 
   const handleLoneWolfAction = () => {
@@ -209,11 +220,13 @@ const NightPhase: React.FC<NightPhaseProps> = ({
       const idx = seerSelectedCenterIndices[0];
       const card = gameState.centerCards[idx];
       
+      onAction('LONE_WOLF_VIEW', [idx]);
+
       setResultData({
           title: "底牌信息",
           cards: [{ role: card, label: `底牌 ${idx + 1}` }]
       });
-      setHasActed(true);
+      confirmTurn();
   };
 
   const handleInsomniacAction = () => {
@@ -221,7 +234,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
           title: "你现在的身份",
           cards: [{ role: currentPlayer.role!, label: "Current Role" }]
       });
-      setHasActed(true);
+      confirmTurn();
   };
 
 
@@ -319,7 +332,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                                         // Limit 1: Auto-Switch (Replace old selection)
                                         setSelectedTargetIds([player.id]);
                                     } else {
-                                        // Limit > 1 (e.g. Troublemaker): Rolling Selection
+                                        // Limit > 1: Rolling Selection
                                         setSelectedTargetIds(prev => {
                                             if (prev.length < playerSelectLimit) return [...prev, player.id];
                                             // Queue is full, remove the first one (FIFO) and add new one
@@ -373,7 +386,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                         <div className="bg-paper border-sketch px-6 py-2 text-center mb-2">
                             <span className="text-rust font-woodcut text-xl">等待夜色褪去...</span>
                         </div>
-                        <span className="text-xs text-inkDim font-mono">Waiting for timer...</span>
+                        <span className="text-xs text-inkDim font-mono">Waiting for others...</span>
                     </div>
                   )}
               </div>
@@ -388,16 +401,23 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   if (!isMyTurn) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-ink overflow-hidden relative p-8">
-        {/* GLOBAL TIMER - Visible to EVERYONE now */}
-        <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-50">
+        {/* GLOBAL TIMER - Visible to EVERYONE now (High Z-Index) */}
+        <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-[100] pointer-events-none">
              <div className="flex items-center gap-2">
                  <div className="w-2 h-2 bg-rust rounded-full animate-ping"></div>
-                 <div className="text-rust text-xs font-bold tracking-widest">
+                 <div className="text-rust text-xs font-bold tracking-widest shadow-white text-shadow-sm">
                     {currentPlayer.isHost ? "正在播报... / BROADCASTING" : "夜间行动中 / NIGHT PHASE"}
                  </div>
              </div>
-             <div className="flex items-center gap-4">
-                <div className="text-xl font-mono text-ink">{gameState.timer}s</div>
+             <div className="flex items-center gap-4 pointer-events-auto">
+                 {/* Explicitly show Current Role Name to everyone */}
+                 <div className="bg-paper border border-ink/30 px-3 py-1 rounded shadow-sm flex flex-col items-end">
+                     <span className="text-[10px] uppercase text-inkDim font-bold">Current</span>
+                     <span className="text-sm font-woodcut text-ink">{roleDef?.name.split('/')[0]}</span>
+                 </div>
+                 <div className="text-xl font-mono text-ink bg-paper/80 px-3 py-1 rounded border border-ink/20 shadow-sm backdrop-blur-sm min-w-[3rem] text-center">
+                    {gameState.timer}s
+                 </div>
              </div>
         </div>
 
@@ -415,8 +435,8 @@ const NightPhase: React.FC<NightPhaseProps> = ({
 
         {/* Current Order Indicator (Visible to everyone so they know who's moving) */}
         <div className="absolute bottom-6 right-6 text-right opacity-30">
-            <p className="text-[10px] font-bold uppercase tracking-widest">Current Action</p>
-            <p className="font-woodcut text-xl">{roleDef?.name.split('/')[1]}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest">Next Up</p>
+            {/* Logic to preview next role could go here, but kept simple for now */}
         </div>
       </div>
     );
@@ -426,8 +446,11 @@ const NightPhase: React.FC<NightPhaseProps> = ({
   return (
     <div className="flex flex-col items-center justify-start h-full pt-4 pb-20 overflow-hidden relative">
       {/* Global Timer for Active Player */}
-      <div className="absolute top-4 right-4 z-50 text-xl font-mono text-ink font-bold border-b-2 border-rust">
-         {gameState.timer}s
+      <div className="absolute top-4 right-4 z-50 flex items-center gap-2">
+         <span className="text-xs uppercase font-bold text-rust animate-pulse">Your Turn</span>
+         <div className="text-xl font-mono text-ink font-bold border-b-2 border-rust bg-paper/80 px-2">
+            {gameState.timer}s
+         </div>
       </div>
       
       {/* Title / Header */}
@@ -507,7 +530,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                             ))}
                           </div>
                           {!hasActed ? (
-                                <Button onClick={() => setHasActed(true)} variant="danger" fullWidth>确认同伴</Button>
+                                <Button onClick={confirmTurn} variant="danger" fullWidth>确认同伴 (Ready)</Button>
                           ) : <div className="text-danger font-bold">已确认</div>}
                        </div>
                     );
@@ -566,7 +589,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
                   </div>
 
                   {!hasActed ? (
-                       <Button onClick={() => setHasActed(true)} fullWidth>确认</Button>
+                       <Button onClick={confirmTurn} fullWidth>确认 (Done)</Button>
                   ) : (
                      <div className="text-inkDim mt-4 italic">等待天亮...</div>
                   )}
@@ -589,7 +612,7 @@ const NightPhase: React.FC<NightPhaseProps> = ({
       {hasActed && !resultData && (
           <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-40 bg-paper border-sketch px-8 py-4 shadow-xl animate-fade-in-up">
               <h3 className="text-2xl font-woodcut text-ink mb-1 text-center">操作完成</h3>
-              <p className="text-xs text-inkDim uppercase tracking-widest text-center">请等待倒计时结束...</p>
+              <p className="text-xs text-inkDim uppercase tracking-widest text-center">等待其他人...</p>
           </div>
       )}
     </div>

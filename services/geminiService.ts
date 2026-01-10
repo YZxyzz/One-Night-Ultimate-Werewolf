@@ -3,6 +3,8 @@ import { GoogleGenAI, Modality } from "@google/genai";
 class GeminiService {
   private ai: GoogleGenAI | null = null;
   private apiKey: string | undefined;
+  // Cache for generated audio to prevent API delays on replay
+  private audioCache: Map<string, ArrayBuffer> = new Map();
 
   constructor() {
     this.apiKey = this.getApiKey();
@@ -16,30 +18,21 @@ class GeminiService {
 
   // Robust way to get environment variable in different build systems (Vite, Webpack, Next.js)
   private getApiKey(): string | undefined {
-    // 1. Check Vite standard (import.meta.env)
-    // Note: TypeScript might complain about import.meta if tsconfig isn't set for ESNext, 
-    // so we use a safe check.
     try {
-      // Cast to any to avoid TypeScript errors if ImportMeta is not fully defined in the environment
       const meta = import.meta as any;
       if (meta && meta.env) {
         if (meta.env.VITE_API_KEY) return meta.env.VITE_API_KEY;
         if (meta.env.API_KEY) return meta.env.API_KEY;
       }
-    } catch (e) {
-      // Ignore errors if import.meta is not supported
-    }
+    } catch (e) {}
 
-    // 2. Check Node/Webpack standard (process.env)
     try {
       if (typeof process !== 'undefined' && process.env) {
         if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
         if (process.env.NEXT_PUBLIC_API_KEY) return process.env.NEXT_PUBLIC_API_KEY;
         if (process.env.API_KEY) return process.env.API_KEY;
       }
-    } catch (e) {
-      // Ignore errors if process is not defined
-    }
+    } catch (e) {}
 
     return undefined;
   }
@@ -50,11 +43,19 @@ class GeminiService {
 
   /**
    * Generates audio narration for the "God" role.
+   * Uses Caching to avoid re-generating standard lines.
    */
   async generateNarration(text: string): Promise<ArrayBuffer | null> {
     if (!this.ai) return null;
 
+    // 1. Check Cache
+    if (this.audioCache.has(text)) {
+        console.log("Playing from cache:", text.substring(0, 20) + "...");
+        return this.audioCache.get(text)!;
+    }
+
     try {
+      console.log("Generating new narration:", text.substring(0, 20) + "...");
       const response = await this.ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: text }] }],
@@ -62,8 +63,10 @@ class GeminiService {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: {
-              // 'Kore' is typically a clear, natural female voice suitable for narration.
-              prebuiltVoiceConfig: { voiceName: 'Kore' }, 
+              // 'Fenrir' is a deep, intense male voice. Perfect for a game narrator/god.
+              // 'Charon' is also good (deep, mystical). 
+              // 'Kore' is female (clear).
+              prebuiltVoiceConfig: { voiceName: 'Fenrir' }, 
             },
           },
         },
@@ -78,6 +81,10 @@ class GeminiService {
         for (let i = 0; i < len; i++) {
           bytes[i] = binaryString.charCodeAt(i);
         }
+        
+        // 2. Save to Cache
+        this.audioCache.set(text, bytes.buffer);
+        
         return bytes.buffer;
       }
       return null;

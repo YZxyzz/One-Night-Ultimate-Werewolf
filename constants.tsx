@@ -45,8 +45,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '晚上醒来确认同伴。如果是独狼，可查看一张底牌。 / Wake up to find other werewolves. If lone wolf, view a center card.',
     victoryCondition: '如果没有狼人被投票处决，狼人阵营获胜。 / Wins if no Werewolf dies.',
     nightOrder: 2,
-    wakeUpText: '狼人请睁眼 / Werewolves, wake up',
-    actionDescription: '确认你的同伴。如果是独狼，查看一张底牌。 / Identify teammates. If alone, view a center card.',
+    wakeUpText: '狼人，请睁眼。',
+    actionDescription: '寻找你的同伴。如果你是孤狼，可以查看一张底牌。',
     imagePlaceholder: getImageUrl('a fearsome werewolf with glowing red eyes in a dark forest, fur texture')
   },
   [RoleType.MINION]: {
@@ -57,8 +57,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '知道谁是狼人，但狼人不知道你是谁。 / Knows who the Werewolves are.',
     victoryCondition: '只要狼人获胜，爪牙就获胜。 / Wins if the Werewolves win.',
     nightOrder: 3,
-    wakeUpText: '爪牙请睁眼 / Minion, wake up',
-    actionDescription: '确认狼人是谁。 / Identify the Werewolves.',
+    wakeUpText: '爪牙，请睁眼。',
+    actionDescription: '看看谁是你的主人。狼人请竖起大拇指。',
     imagePlaceholder: getImageUrl('a hooded dark cultist minion holding a dagger, evil grin, purple magic')
   },
   [RoleType.MASON]: {
@@ -69,8 +69,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '晚上醒来确认另一位守夜人是谁。 / Wake up and look for the other Mason.',
     victoryCondition: '好人阵营胜利条件。 / Standard Villager victory.',
     nightOrder: 4,
-    wakeUpText: '守夜人请睁眼 / Masons, wake up',
-    actionDescription: '确认另一位守夜人。 / Identify the other Mason.',
+    wakeUpText: '守夜人，请睁眼。',
+    actionDescription: '寻找你的兄弟。',
     imagePlaceholder: getImageUrl('two stone masons shaking hands, secret society symbol, stone texture')
   },
   [RoleType.SEER]: {
@@ -81,8 +81,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '可以查看一位玩家的身份，或者查看两张底牌。 / View cards.',
     victoryCondition: '好人阵营胜利条件。 / Standard Villager victory.',
     nightOrder: 5,
-    wakeUpText: '预言家请睁眼 / Seer, wake up',
-    actionDescription: '查看玩家身份或底牌。 / View a player card or center cards.',
+    wakeUpText: '预言家，请睁眼。',
+    actionDescription: '你想知道谁的身份？查看一位玩家，或者两张底牌。',
     imagePlaceholder: getImageUrl('mystic female seer looking into a glowing crystal ball, magical aura')
   },
   [RoleType.ROBBER]: {
@@ -93,8 +93,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '交换自己与另一位玩家的牌，并查看新牌。 / Swap and view.',
     victoryCondition: '根据你抢到的新身份决定。 / Depends on new role.',
     nightOrder: 6,
-    wakeUpText: '强盗请睁眼 / Robber, wake up',
-    actionDescription: '交换身份并查看。 / Swap card and view new role.',
+    wakeUpText: '强盗，请睁眼。',
+    actionDescription: '你想成为谁？交换一张牌，并看看你变成了什么。',
     imagePlaceholder: getImageUrl('a sneaky thief robber stealing a pouch of gold coins, shadows')
   },
   [RoleType.TROUBLEMAKER]: {
@@ -105,8 +105,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '交换另外两名玩家的牌，但不能查看。 / Swap two others.',
     victoryCondition: '好人阵营胜利条件。 / Standard Villager victory.',
     nightOrder: 7,
-    wakeUpText: '捣蛋鬼请睁眼 / Troublemaker, wake up',
-    actionDescription: '交换两名玩家的牌。 / Swap two players\' cards.',
+    wakeUpText: '捣蛋鬼，请睁眼。',
+    actionDescription: '制造一些混乱吧。交换另外两名玩家的卡牌。',
     imagePlaceholder: getImageUrl('a mischievous jester troublemaker juggling chaotic magic orbs')
   },
   [RoleType.DRUNK]: {
@@ -117,8 +117,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '将自己的牌与一张底牌交换，但不能查看。 / Swap with center.',
     victoryCondition: '你现在的身份其实是底牌的那张。 / You are your new card.',
     nightOrder: 8,
-    wakeUpText: '酒鬼请睁眼 / Drunk, wake up',
-    actionDescription: '与一张底牌交换。 / Swap with a center card.',
+    wakeUpText: '酒鬼，请醒一醒。',
+    actionDescription: '你喝醉了。把你的牌和桌子中间的一张牌换一下。',
     imagePlaceholder: getImageUrl('a drunk man passed out on a barrel of ale, tavern setting')
   },
   [RoleType.INSOMNIAC]: {
@@ -129,8 +129,8 @@ export const ROLES: Record<RoleType, RoleDefinition> = {
     ability: '游戏夜结束前，查看自己的身份牌是否被交换。 / Check your card.',
     victoryCondition: '根据你最终看到的身份决定。 / Depends on final role.',
     nightOrder: 9,
-    wakeUpText: '失眠者请睁眼 / Insomniac, wake up',
-    actionDescription: '确认你的身份。 / Check your current role.',
+    wakeUpText: '失眠者，请睁眼。',
+    actionDescription: '漫长的一夜。看看你的身份有没有发生变化。',
     imagePlaceholder: getImageUrl('a wide-eyed insomniac person in bed looking at a clock, night time')
   },
   [RoleType.VILLAGER]: {
