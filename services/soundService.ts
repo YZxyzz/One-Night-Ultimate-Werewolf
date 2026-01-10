@@ -7,7 +7,8 @@ export class SoundService {
 
   get context() {
     if (!this.ctx) {
-      this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // @ts-ignore
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     }
     return this.ctx;
   }
@@ -20,7 +21,8 @@ export class SoundService {
   }
 
   /**
-   * Generates a "Mysterious Void" ambience.
+   * Generates a "Medieval Mystical" drone ambience.
+   * Simulates a dark organ/string section using Sawtooth/Triangle waves with filtering.
    */
   startAmbience() {
     if (this.isAmbiencePlaying) return;
@@ -34,132 +36,146 @@ export class SoundService {
     // --- Master Chain ---
     this.masterGain = ctx.createGain();
     this.masterGain.gain.setValueAtTime(0, now);
-    this.masterGain.gain.linearRampToValueAtTime(0.15, now + 2); // Fade in
+    this.masterGain.gain.linearRampToValueAtTime(0.2, now + 4); // Slow fade in (4s)
     this.masterGain.connect(ctx.destination);
 
-    // --- FX Chain (Delay/Echo) ---
-    const delay = ctx.createDelay();
-    delay.delayTime.value = 0.4; // 400ms delay
+    // --- Musical Drone Construction (D Minor ish for dark vibe) ---
+    // Frequencies: D2 (73.42), A2 (110), D3 (146.83), F3 (174.61)
+    const freqs = [73.42, 110.00, 146.83, 174.61]; 
 
-    const feedback = ctx.createGain();
-    feedback.gain.value = 0.4; // 40% feedback
+    freqs.forEach((f, i) => {
+        // Create 2 oscillators per note for "Chorusing" effect (richer sound)
+        for (let j = 0; j < 2; j++) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            const filter = ctx.createBiquadFilter();
 
-    const delayFilter = ctx.createBiquadFilter();
-    delayFilter.type = 'lowpass';
-    delayFilter.frequency.value = 1200; // Dampen high frequencies on echoes
+            // Sawtooth sounds like strings/brass, Triangle sounds like flute/organ
+            osc.type = i === 0 ? 'sawtooth' : 'triangle'; 
+            
+            // Detune slightly for thickness (Simulates multiple instruments)
+            const detune = (Math.random() * 10) - 5; 
+            osc.frequency.value = f;
+            osc.detune.value = detune;
 
-    // Connect Delay Loop
-    delay.connect(feedback);
-    feedback.connect(delayFilter);
-    delayFilter.connect(delay);
-    
-    // Connect Delay to Master
-    delay.connect(this.masterGain);
+            // Lowpass filter to remove harshness, making it sound distant/muffled
+            filter.type = 'lowpass';
+            filter.Q.value = 1;
+            filter.frequency.value = 200 + (Math.random() * 150); // Very muffled tone
 
-    // --- Oscillators (The Sound Source) ---
-    const frequencies = [55, 110, 130.81];
+            // LFO to modulate filter (simulate breathing/movement/wind)
+            const lfo = ctx.createOscillator();
+            lfo.type = 'sine';
+            lfo.frequency.value = 0.05 + (Math.random() * 0.05); // Very slow speed
+            const lfoGain = ctx.createGain();
+            lfoGain.gain.value = 50; // Modulate filter cutoff
 
-    frequencies.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
+            lfo.connect(lfoGain);
+            lfoGain.connect(filter.frequency);
 
-      osc.type = i === 0 ? 'sine' : 'triangle'; 
-      osc.frequency.value = freq;
+            // Routing
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.masterGain!);
 
-      filter.type = 'lowpass';
-      filter.frequency.value = 400; // Start dark
+            // Volume balance: Root notes louder, higher notes quieter
+            const baseVol = (1 / (i + 1)) * 0.3; 
+            gain.gain.value = baseVol;
 
-      const lfo = ctx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 0.1 + (Math.random() * 0.1); 
-      
-      const lfoGain = ctx.createGain();
-      lfoGain.gain.value = 150; 
+            osc.start(now);
+            lfo.start(now);
 
-      lfo.connect(lfoGain);
-      lfoGain.connect(filter.frequency);
-
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain!); 
-      gain.connect(delay);      
-
-      osc.start(now);
-      lfo.start(now);
-
-      const vol = i === 0 ? 0.8 : 0.3;
-      gain.gain.value = vol;
-
-      this.droneNodes.push(osc, lfo, gain, filter, lfoGain);
+            this.droneNodes.push(osc, lfo, gain, filter, lfoGain);
+        }
     });
 
-    this.droneNodes.push(this.masterGain, delay, feedback, delayFilter);
+    // Add a sub-bass rumble
+    const subOsc = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    subOsc.type = 'sine';
+    subOsc.frequency.value = 36.71; // D1 (Deep bass)
+    subGain.gain.value = 0.4;
+    subOsc.connect(subGain);
+    subGain.connect(this.masterGain);
+    subOsc.start(now);
+    this.droneNodes.push(subOsc, subGain);
+
     this.isAmbiencePlaying = true;
   }
 
   stopAmbience() {
     const now = this.context.currentTime;
-    // Fade out logic if masterGain exists
+    // Fade out logic
     if (this.masterGain) {
         try {
-            this.masterGain.gain.linearRampToValueAtTime(0, now + 1);
+            this.masterGain.gain.cancelScheduledValues(now);
+            this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
+            this.masterGain.gain.linearRampToValueAtTime(0, now + 2);
         } catch(e) {}
     }
 
-    this.droneNodes.forEach(node => {
-        if (node instanceof OscillatorNode) {
-            try { node.stop(now + 1); } catch(e){}
-        }
-        setTimeout(() => {
-             try { node.disconnect(); } catch(e){}
-        }, 1100);
-    });
-    this.droneNodes = [];
-    this.masterGain = null;
+    // Cleanup nodes after fade
+    setTimeout(() => {
+        this.droneNodes.forEach(node => {
+            if (node instanceof OscillatorNode) {
+                try { node.stop(); } catch(e){}
+            }
+            try { node.disconnect(); } catch(e){}
+        });
+        if (this.masterGain) this.masterGain.disconnect();
+        this.droneNodes = [];
+        this.masterGain = null;
+    }, 2100);
+    
     this.isAmbiencePlaying = false;
   }
 
   // --- AUDIO DUCKING (Lowers background volume when Voice plays) ---
-  private fadeAmbience(targetVol: number, duration: number = 0.5) {
+  private fadeAmbience(targetVol: number, duration: number = 0.8) {
       if (this.masterGain && this.isAmbiencePlaying) {
           try {
               const now = this.context.currentTime;
               this.masterGain.gain.cancelScheduledValues(now);
+              this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
               this.masterGain.gain.linearRampToValueAtTime(targetVol, now + duration);
           } catch(e) {}
       }
   }
 
   async playAudioData(arrayBuffer: ArrayBuffer): Promise<void> {
+    // Ensure Context is running (Fix for Chrome Autoplay policy)
+    if (this.context.state === 'suspended') {
+        await this.context.resume();
+    }
+
     const ctx = this.context;
+    
     try {
-        // 1. Duck Ambience (Lower Volume)
+        // 1. Duck Ambience (Lower Volume smoothly)
         this.fadeAmbience(0.05); // Lower to 5%
 
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         
-        // Voice Gain (Boost volume slightly)
+        // Voice Gain (Boost volume/Presence)
         const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.5; 
+        gainNode.gain.value = 1.5; // Louder voice
         
         source.connect(gainNode);
         gainNode.connect(ctx.destination);
         
-        source.start(0);
         return new Promise((resolve) => {
+          source.start(0);
           source.onended = () => {
-              resolve();
               // 2. Restore Ambience
-              this.fadeAmbience(0.15); // Back to 15%
+              this.fadeAmbience(0.2); // Restore to original volume
+              resolve();
           };
         });
     } catch (e) {
         console.error("Error playing audio buffer", e);
-        // Ensure ambience comes back even on error
-        this.fadeAmbience(0.15);
+        this.fadeAmbience(0.2);
         return Promise.resolve();
     }
   }

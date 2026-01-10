@@ -12,19 +12,91 @@ interface RuleBookProps {
   myRole?: RoleType | null; 
 }
 
+// --- STRATEGY CONTENT ---
+const STRATEGIES = {
+    overview: [
+        { title: "别信自己的牌", text: "这是最重要的心法。你闭眼时是狼人，睁眼时可能已经是好人了。你闭眼时是预言家，睁眼时可能已经变成狼人了。所有战术都必须考虑到“身份互换”的可能性。" },
+        { title: "平民要“挡刀”", text: "如果你是好人（村民、预言家等），不要怕死。有时候为了保护关键角色（如拿到好人牌的强盗），或者为了炸出狼人，你可以假装自己是其他身份。如果你是村民，可以跳预言家给好人发金水，看谁反应不对劲。" },
+        { title: "投票是唯一武器", text: "只有一次投票机会。如果不确定谁是狼，优先投那些“发言最完美、最不像狼”或者“完全不说话”的人。狼人往往会为了生存而编造完美的逻辑。" },
+    ],
+    roles: [
+        { 
+            role: RoleType.WEREWOLF, 
+            title: "狼人：绝处逢生", 
+            sections: [
+                { subtitle: "卖队友的唯一时机", text: "绝对不要为了“做好身份”而踩死队友，因为只要一个狼死，全队输。但是！如果你确信队友被【强盗】换了（队友现在是好人，你是狼），或者你自己被换成了好人，请毫不犹豫地指认以前的队友！这是利用规则获胜的高端操作。" },
+                { subtitle: "独狼战术", text: "如果只有你一只狼，你可以查看一张底牌。最好的策略是直接跳那个底牌的身份（因为没人能反驳你）。" },
+                { subtitle: "假装好人", text: "如果不幸被预言家查杀，不要慌。你可以反咬他是狼人，或者声称自己是捣蛋鬼/强盗，把局面搅浑。" }
+            ]
+        },
+        { 
+            role: RoleType.MINION, 
+            title: "爪牙：替罪羊", 
+            sections: [
+                { subtitle: "替死鬼", text: "你的胜利条件是狼人活着。所以如果狼人被怀疑，你要立刻跳出来承认自己是狼人，或者跳一个神职身份（如预言家）故意聊爆，吸引大家的选票投死你。" },
+                { subtitle: "制造混乱", text: "你可以声称自己是捣蛋鬼，说换了A和B。这会让A和B互相猜疑，分散好人的注意力。" }
+            ]
+        },
+        { 
+            role: RoleType.SEER, 
+            title: "预言家：钓鱼执法", 
+            sections: [
+                { subtitle: "延迟报警", text: "天亮后不要立刻报出你的查验结果。先听一圈。如果有狼人正好悍跳了你查验的那张底牌，或者悍跳了你的身份，这时候你再拍死他，力度最大。" },
+                { subtitle: "查人 vs 查底牌", text: "查人风险大（可能查到强盗变成狼），但收益高。查底牌安全，但信息量少。高端局建议查两张底牌，用来排坑。" }
+            ]
+        },
+        { 
+            role: RoleType.ROBBER, 
+            title: "强盗：阵营摇摆人", 
+            sections: [
+                { subtitle: "抢到狼人怎么办？", text: "恭喜你，你现在是狼人了！原来的狼人变成了好人。你千万不要跳强盗，因为原来的狼人（现好人）会为了胜利直接把你投出去。你需要潜伏下来，帮助狼队。" },
+                { subtitle: "抢到好人怎么办？", text: "第一天就要跳出来，大声说“我抢了X，X现在是好人”。这样直接保住了两个人（你和X），大大缩小了狼坑范围。" }
+            ]
+        },
+        { 
+            role: RoleType.TROUBLEMAKER, 
+            title: "捣蛋鬼：混乱制造者", 
+            sections: [
+                { subtitle: "空跳战术", text: "你可以实际上什么都没换，但声称你换了A和B。观察A和B的反应。如果有人极力否认或者显得很慌张，他心里可能有鬼。" },
+                { subtitle: "保护身份", text: "如果你换了两个你认为是好人的人，可以先不说，防止狼人知道身份后重新编逻辑。" }
+            ]
+        },
+        { 
+            role: RoleType.TANNER, 
+            title: "皮匠：求死之道", 
+            sections: [
+                { subtitle: "别死得太假", text: "如果你直接说“投我吧”，大家会知道你是皮匠。你需要装成一个“聊爆了的狼人”。比如：前言不搭后语、假装看错牌、或者跳一个场上已经有的身份然后被揭穿。" }
+            ]
+        },
+        {
+            role: RoleType.INSOMNIAC,
+            title: "失眠者：最后的目击者",
+            sections: [
+                { subtitle: "排坑机器", text: "如果你醒来发现身份没变，那么你确信自己是好人。你可以强势带队。如果身份变了（比如变成了狼人），请参照狼人战术，不要暴露自己身份变了的事实。" }
+            ]
+        },
+        {
+            role: RoleType.VILLAGER,
+            title: "村民：并不是路人甲",
+            sections: [
+                { subtitle: "挡刀与诈身份", text: "不要只说“我是村民，过”。你可以假装自己是强盗或捣蛋鬼，看有没有人紧张。如果在前置位，甚至可以跳预言家给后置位发金水，诈一下对方身份。" }
+            ]
+        }
+    ]
+};
+
 const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, myRole }) => {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'identity' | 'overview' | 'roles' | 'glossary'>('overview');
-  const [isIdentityRevealed, setIsIdentityRevealed] = useState(false); // New state for Safe Peek
+  const [activeTab, setActiveTab] = useState<'identity' | 'overview' | 'roles' | 'glossary' | 'tactics'>('overview');
+  const [isIdentityRevealed, setIsIdentityRevealed] = useState(false); 
   
   const [wasOpen, setWasOpen] = useState(false);
 
   useEffect(() => {
     if (isOpen && !wasOpen) {
       setWasOpen(true);
-      // Reset reveal state on open
       setIsIdentityRevealed(false);
       
       if (myRole) {
@@ -32,7 +104,7 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
       } else if (activeRoleTypes.length > 0) {
         setActiveTab('roles');
       } else {
-        setActiveTab('glossary');
+        setActiveTab('overview');
       }
     } else if (!isOpen) {
       setWasOpen(false);
@@ -136,14 +208,14 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
 
   const TabButton = ({ id, labelCn, labelEn }: { id: typeof activeTab, labelCn: string, labelEn: string }) => (
     <button 
-      className={`flex-none py-3 px-6 border-b-2 transition-colors flex flex-col items-center justify-center min-w-[100px] font-woodcut
+      className={`flex-none py-3 px-4 border-b-2 transition-colors flex flex-col items-center justify-center min-w-[80px] font-woodcut
         ${activeTab === id 
           ? 'border-ink text-ink bg-black/5' 
           : 'border-transparent text-inkDim hover:text-ink'}`}
       onClick={() => setActiveTab(id)}
     >
-      <span className="text-xl font-bold leading-none">{labelCn}</span>
-      <span className="text-[10px] uppercase tracking-widest font-normal mt-1 opacity-70 font-sans">{labelEn}</span>
+      <span className="text-lg font-bold leading-none">{labelCn}</span>
+      <span className="text-[9px] uppercase tracking-widest font-normal mt-1 opacity-70 font-sans">{labelEn}</span>
     </button>
   );
 
@@ -168,12 +240,13 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
           </button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs - Reordered Tactics to end */}
         <div className="flex border-b-2 border-ink/10 overflow-x-auto flex-none w-full bg-paper scrollbar-hide">
-          {myRole && <TabButton id="identity" labelCn="我的身份" labelEn="My Role" />}
-          <TabButton id="overview" labelCn="胜利目标" labelEn="Objectives" />
-          {activeRoleTypes.length > 0 && <TabButton id="roles" labelCn="本局配置" labelEn="Deck" />}
-          <TabButton id="glossary" labelCn="完整图鉴" labelEn="Codex" />
+          {myRole && <TabButton id="identity" labelCn="身份" labelEn="Role" />}
+          <TabButton id="overview" labelCn="规则" labelEn="Rules" />
+          {activeRoleTypes.length > 0 && <TabButton id="roles" labelCn="配置" labelEn="Deck" />}
+          <TabButton id="glossary" labelCn="图鉴" labelEn="Codex" />
+          <TabButton id="tactics" labelCn="战术手札" labelEn="Tactics" />
         </div>
 
         {/* Content Scrollable Area */}
@@ -292,6 +365,52 @@ const RuleBook: React.FC<RuleBookProps> = ({ isOpen, onClose, activeRoleTypes, m
               </div>
               {allRoles.map(role => renderRoleCard(role.type, false))}
             </div>
+          )}
+
+          {/* TAB: TACTICS (NEW - Master Level) */}
+          {activeTab === 'tactics' && (
+              <div className="space-y-8 animate-fade-in-up relative z-10 pb-10">
+                  <div className="bg-paperDark p-6 border-sketch shadow-sketch">
+                      <h3 className="text-2xl font-woodcut text-ink mb-4 border-b-2 border-ink pb-2">大师心法 / Master's Mindset</h3>
+                      <div className="grid grid-cols-1 gap-6">
+                          {STRATEGIES.overview.map((s, i) => (
+                              <div key={i} className="mb-2">
+                                  <h4 className="font-bold text-rust text-lg mb-1 font-woodcut">{s.title}</h4>
+                                  <p className="text-base text-ink font-serif leading-relaxed">{s.text}</p>
+                              </div>
+                          ))}
+                      </div>
+                  </div>
+                  
+                  <div>
+                      <h3 className="text-2xl font-woodcut text-ink mb-6 text-center">角色进阶战术 / Role Mastery</h3>
+                      <div className="space-y-6">
+                          {STRATEGIES.roles.map((s, i) => {
+                              // Filter roles if we know active types
+                              if (activeRoleTypes.length > 0 && !activeRoleTypes.includes(s.role)) return null;
+                              
+                              return (
+                                <div key={i} className="border-2 border-ink/10 p-5 rounded-xl bg-white/60 relative overflow-hidden group hover:border-ink/40 transition-colors">
+                                    <div className={`absolute top-0 left-0 w-1.5 h-full ${s.role === RoleType.WEREWOLF ? 'bg-red-800' : 'bg-blue-800'} opacity-60`}></div>
+                                    <div className="flex items-center gap-3 mb-4 pl-2 border-b border-ink/10 pb-2">
+                                        <span className="font-woodcut text-xl text-ink">{s.title}</span>
+                                        {activeRoleTypes.includes(s.role) && <span className="text-[9px] bg-rust text-white px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">In Play</span>}
+                                    </div>
+                                    
+                                    <div className="space-y-4 pl-2">
+                                        {s.sections.map((section, idx) => (
+                                            <div key={idx}>
+                                                <span className="block text-xs font-bold text-inkDim uppercase tracking-wider mb-1">{section.subtitle}</span>
+                                                <p className="text-sm text-ink font-serif leading-relaxed">{section.text}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                              );
+                          })}
+                      </div>
+                  </div>
+              </div>
           )}
 
         </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { GamePhase, GameState, RoleType, Player, RoleTeam, GameResult } from './types';
+import { GamePhase, GameState, RoleType, Player, RoleTeam, GameResult, NetworkMessage } from './types';
 import { ROLES, DEFAULT_PLAYER_COUNT, NIGHT_SEQUENCE, AVATAR_COLORS } from './constants';
 import Button from './components/ui/Button';
 import NightPhase from './components/game/NightPhase';
@@ -17,9 +17,6 @@ const generateId = () => {
 const getRandomColor = () => {
   return AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
 };
-
-// P2P Message Types defined in types.ts now includes ACTION_NIGHT_ACTION
-import { NetworkMessage } from './types';
 
 const getInitialState = (): GameState => ({
   roomCode: '',
@@ -62,23 +59,21 @@ const App: React.FC = () => {
   const myIdRef = useRef<string | null>(null);
 
   // --- DERIVED STATE: ACTIVE NIGHT SEQUENCE ---
-  // Calculates which roles are actually present in the game (Initial Roles)
-  // This ensures we skip roles like Minion/Mason if they aren't dealt to anyone.
+  // Calculates which roles are in the "Game Deck" (Players + Center)
   const activeNightSequence = useMemo(() => {
-    // Only calculate this during game phases, otherwise return full list or empty
     if (gameState.currentPhase === GamePhase.LOBBY || gameState.currentPhase === GamePhase.ROLE_REVEAL) {
         return NIGHT_SEQUENCE;
     }
 
-    // Get all initial roles held by players
-    const rolesInPlay = new Set(gameState.players.map(p => p.initialRole));
+    const playerRoles = gameState.players.map(p => p.initialRole).filter((r): r is RoleType => r !== null);
+    const centerRoles = gameState.centerCards;
+    const allRolesInGame = new Set([...playerRoles, ...centerRoles]);
     
-    // Filter the master NIGHT_SEQUENCE to only include roles that are currently held by a player
-    // We MUST use the master sequence order to preserve game logic
-    const sequence = NIGHT_SEQUENCE.filter(role => rolesInPlay.has(role));
+    // Filter the master NIGHT_SEQUENCE
+    const sequence = NIGHT_SEQUENCE.filter(role => allRolesInGame.has(role));
     
     return sequence;
-  }, [gameState.players, gameState.currentPhase]);
+  }, [gameState.players, gameState.centerCards, gameState.currentPhase]);
 
 
   // --- Auto-fill Room from URL ---
@@ -94,22 +89,29 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!localPlayer?.isHost) return;
     
-    // Handle Mute State Changes dynamically
     if (isMuted) {
         soundService.stopAmbience();
         return;
     }
 
     const playGlobalNarration = async () => {
+        // Ensure Audio Context is resumed when phases change, just in case
+        await soundService.init();
+
         if (gameState.currentPhase === GamePhase.NIGHT_INTRO) {
-            await soundService.init();
             soundService.startAmbience();
-            setTimeout(() => {
-                 if (!isMuted) geminiService.generateNarration("暗夜降临... 请所有人闭上眼睛。");
+            setTimeout(async () => {
+                 if (!isMuted) {
+                    const audio = await geminiService.generateNarration("暗夜降临... 请所有人闭上眼睛。");
+                    if (audio) await soundService.playAudioData(audio);
+                 }
             }, 500);
             
         } else if (gameState.currentPhase === GamePhase.DAY_DISCUSSION) {
-             if (!isMuted) geminiService.generateNarration("天亮了... 所有人请睁眼！");
+             if (!isMuted) {
+                const audio = await geminiService.generateNarration("天亮了... 所有人请睁眼！");
+                if (audio) await soundService.playAudioData(audio);
+             }
         } else if (gameState.currentPhase === GamePhase.LOBBY) {
              soundService.stopAmbience();
         }
@@ -117,6 +119,25 @@ const App: React.FC = () => {
 
     playGlobalNarration();
   }, [gameState.currentPhase, localPlayer?.isHost, isMuted]);
+
+  // --- NIGHT PHASE ROLE NARRATION (Host Only) ---
+  useEffect(() => {
+      if (!localPlayer?.isHost || isMuted) return;
+      if (gameState.currentPhase !== GamePhase.NIGHT_ACTIVE) return;
+
+      const currentRole = activeNightSequence[gameState.currentNightRoleIndex];
+      if (currentRole) {
+          const roleDef = ROLES[currentRole];
+          const timeout = setTimeout(async () => {
+              const text = `${roleDef.wakeUpText} ${roleDef.actionDescription}`;
+              const audio = await geminiService.generateNarration(text);
+              if (audio) {
+                  await soundService.playAudioData(audio);
+              }
+          }, 1000);
+          return () => clearTimeout(timeout);
+      }
+  }, [gameState.currentPhase, gameState.currentNightRoleIndex, activeNightSequence, localPlayer?.isHost, isMuted]);
 
 
   // --- Utility: Broadcast (Host Only) ---
@@ -135,7 +156,7 @@ const App: React.FC = () => {
     }
   };
 
-  const projectedDeck = useMemo(() => {
+  const projectedDeck = useMemo((): RoleType[] => {
     const count = Math.max(gameState.settings.playerCount, 3); 
     const balancedOrder = [
       RoleType.WEREWOLF, RoleType.SEER, RoleType.ROBBER, 
@@ -205,7 +226,9 @@ const App: React.FC = () => {
   // --- HOST: Create Room ---
   const createRoom = async () => {
     if (!validateName()) return;
-    await soundService.init();
+    // CRITICAL FIX: Ensure AudioContext is resumed immediately on user interaction
+    await soundService.init(); 
+    
     setIsConnecting(true);
     
     if (!(window as any).Peer) {
@@ -349,7 +372,6 @@ const App: React.FC = () => {
               }
            } else {
                // --- DETAILED LOGGING (GOD VIEW) ---
-               // We perform the logic here on the host to ensure the log contains true state
                
                if (actionType === 'ROBBER_SWAP' && targets.length > 0) {
                   const robber = newState.players.find(p => p.id === actorId);
@@ -406,7 +428,6 @@ const App: React.FC = () => {
 
                if (logEntry) newState.log = [...newState.log, logEntry];
                
-               // Mark done
                if (!newState.finishedTurnPlayerIds.includes(actorId)) {
                    newState.finishedTurnPlayerIds = [...newState.finishedTurnPlayerIds, actorId];
                }
@@ -438,7 +459,9 @@ const App: React.FC = () => {
   const joinRoom = async () => {
     if (!validateName()) return;
     if (!roomInput) return;
-    await soundService.init();
+    // CRITICAL FIX: Ensure AudioContext is resumed immediately on user interaction
+    await soundService.init(); 
+    
     setIsConnecting(true);
     setConnectionError('');
     if (!(window as any).Peer) { setConnectionError('网络组件未加载。'); setIsConnecting(false); return; }
@@ -567,19 +590,6 @@ const App: React.FC = () => {
       if (!localPlayer?.isHost) return;
       
       const votes = gameState.votes;
-      const logEntries: string[] = [];
-
-      // --- LOGGING VOTES (Time Rewind) ---
-      Object.entries(votes).forEach(([voterId, targetId]) => {
-          const voter = gameState.players.find(p => p.id === voterId);
-          const target = gameState.players.find(p => p.id === targetId);
-          if (voter && target) {
-              const voterRoleName = ROLES[voter.role!].name.split('/')[0];
-              logEntries.push(`[投票] ${voter.name}(${voterRoleName}) 投给了 ${target.name}`);
-          }
-      });
-      
-      // Calculate Winners logic...
       const voteCounts: Record<string, number> = {};
       Object.values(votes).forEach(tid => { voteCounts[tid as string] = (voteCounts[tid as string] || 0) + 1; });
       let maxVotes = 0;
@@ -613,8 +623,7 @@ const App: React.FC = () => {
       const newState = { 
           ...gameState, 
           currentPhase: GamePhase.DAY_RESULTS, 
-          gameResult: result,
-          log: [...gameState.log, ...logEntries] // Append vote logs
+          gameResult: result
       };
       setGameState(newState);
       broadcastState(newState);
@@ -638,7 +647,6 @@ const App: React.FC = () => {
     if (!localPlayer?.isHost) return;
     if (gameState.currentPhase === GamePhase.NIGHT_INTRO) {
       setTimeout(() => {
-         // Determine first role dynamically
          const sequence = activeNightSequence;
          if (sequence.length > 0) {
              const firstRole = sequence[0];
@@ -647,7 +655,6 @@ const App: React.FC = () => {
              setGameState(nextState);
              broadcastState(nextState);
          } else {
-             // Edge case: No night roles
              const randomIdx = Math.floor(Math.random() * gameState.players.length);
              const nextState = { ...gameState, currentPhase: GamePhase.DAY_DISCUSSION, timer: 0, speakerId: gameState.players[randomIdx].id };
              setGameState(nextState);
@@ -662,7 +669,6 @@ const App: React.FC = () => {
     if (gameState.currentPhase !== GamePhase.NIGHT_ACTIVE) return;
 
     const checkAutoAdvance = () => {
-         // Use Derived Active Sequence
          const sequence = activeNightSequence;
          const currentRole = sequence[gameState.currentNightRoleIndex];
          
@@ -700,9 +706,10 @@ const App: React.FC = () => {
       const nextIndex = prev.currentNightRoleIndex + 1;
       let nextState = { ...prev };
       
-      // Re-calculate sequence inside setter to be safe, or use the stable Night Sequence Logic
-      const rolesInPlay = new Set(prev.players.map(p => p.initialRole));
-      const dynamicSeq = NIGHT_SEQUENCE.filter(role => rolesInPlay.has(role));
+      const playerRoles = prev.players.map(p => p.initialRole).filter((r): r is RoleType => r !== null);
+      const centerRoles = prev.centerCards;
+      const allRolesInGame = new Set([...playerRoles, ...centerRoles]);
+      const dynamicSeq = NIGHT_SEQUENCE.filter(role => allRolesInGame.has(role));
       
       if (nextIndex >= dynamicSeq.length) {
           const randomIdx = Math.floor(Math.random() * prev.players.length);
@@ -717,10 +724,22 @@ const App: React.FC = () => {
     });
   };
 
-  // --- RENDER HELPERS ---
   const renderLobbyBoardConfig = () => {
-      const grouped: Record<string, RoleType[]> = { [RoleTeam.WEREWOLF]: [], [RoleTeam.VILLAGER]: [], [RoleTeam.TANNER]: [] };
-      projectedDeck.forEach(r => { const def = ROLES[r]; if (grouped[def.team]) grouped[def.team].push(r); });
+      // FIX: Explicitly use RoleTeam enum as key to prevent 'unknown' index type error
+      const grouped: Record<RoleTeam, RoleType[]> = { 
+        [RoleTeam.WEREWOLF]: [], 
+        [RoleTeam.VILLAGER]: [], 
+        [RoleTeam.TANNER]: [] 
+      };
+      
+      projectedDeck.forEach((r: RoleType) => { 
+        const def = ROLES[r]; 
+        // With RoleTeam as key, this access is now type-safe
+        if (def && grouped[def.team]) {
+            grouped[def.team].push(r);
+        }
+      });
+      
       return (
           <div className="w-full mt-6 bg-paperDark border-sketch p-6 relative">
              <div className="absolute -top-3 -left-3 w-8 h-8 rounded-full bg-rust opacity-80 border border-ink"></div>
@@ -865,6 +884,13 @@ const App: React.FC = () => {
   const renderResultsPhase = () => {
       const result = gameState.gameResult;
       if (!result) return <div className="p-10">Calculating...</div>;
+      
+      const voteMap: Record<string, string[]> = {}; 
+      Object.entries(gameState.votes).forEach(([voterId, targetId]) => {
+          if (!voteMap[targetId]) voteMap[targetId] = [];
+          voteMap[targetId].push(voterId);
+      });
+      
       return (
           <div className="flex flex-col items-center justify-start min-h-full p-4 pb-20 animate-fade-in-up">
               <div className="text-center mb-8 mt-4 p-6 bg-paper border-sketch shadow-sketch-lg w-full max-w-2xl"><h2 className="text-2xl font-woodcut text-ink mb-2">结局 (Finale)</h2><div className="text-3xl md:text-4xl font-bold text-rust mb-4 leading-tight">{result.winningReason}</div><div className="text-sm font-mono text-inkDim uppercase tracking-widest border-t border-ink/20 pt-2">Winning Team: {result.winners.join(', ')}</div></div>
@@ -872,7 +898,6 @@ const App: React.FC = () => {
                   <h3 className="text-xl font-woodcut text-center mb-4 text-inkDim border-b border-ink/10 pb-2">身份揭示 (Identity Reveal)</h3>
                   {gameState.players.map(p => {
                       const isDead = result.deadPlayerIds.includes(p.id);
-                      // Use p.role (final role) from gameState which comes from Host, ensuring sync
                       const isWinner = result.winners.includes(ROLES[p.role!].team);
                       const roleChanged = p.initialRole !== p.role;
                       return (
@@ -885,6 +910,40 @@ const App: React.FC = () => {
                   })}
               </div>
                <div className="w-full max-w-2xl text-center mb-10 bg-paperDark border-sketch p-4"><h3 className="text-sm font-woodcut mb-4 text-inkDim uppercase tracking-widest">Center Cards</h3><div className="flex justify-center gap-4">{gameState.centerCards.map((c, i) => (<PlayingCard key={i} role={c} isRevealed={true} label={`Center ${i+1}`} size="sm" />))}</div></div>
+               
+               <div className="w-full max-w-4xl p-6 mb-4 space-y-4">
+                  <h3 className="text-xl font-woodcut text-center text-inkDim uppercase tracking-widest border-b border-ink/10 pb-2">投票流向 (Voting Map)</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {gameState.players.map(p => {
+                          const voters = voteMap[p.id] || [];
+                          const isDead = result.deadPlayerIds.includes(p.id);
+                          if (voters.length === 0) return null;
+                          return (
+                              <div key={p.id} className={`p-3 border rounded relative ${isDead ? 'border-rust bg-red-50' : 'border-ink/20 bg-paper'}`}>
+                                  {isDead && <div className="absolute top-0 right-0 bg-rust text-white text-[9px] font-bold px-1 rounded-bl">ELIMINATED</div>}
+                                  <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-8 h-8 rounded-full text-white text-xs flex items-center justify-center font-bold" style={{backgroundColor: p.color}}>{p.name.charAt(0)}</div>
+                                      <span className="font-woodcut text-lg">{p.name}</span>
+                                      <span className="text-xs text-inkDim ml-auto font-mono">获得 {voters.length} 票</span>
+                                  </div>
+                                  <div className="pl-10 flex flex-wrap gap-2">
+                                      {voters.map(vid => {
+                                          const v = gameState.players.find(pl => pl.id === vid);
+                                          if(!v) return null;
+                                          return (
+                                            <div key={vid} className="flex items-center gap-1 bg-ink/5 px-2 py-1 rounded-full border border-ink/10">
+                                                <div className="w-4 h-4 rounded-full text-[8px] flex items-center justify-center text-white" style={{backgroundColor: v.color}}>{v.name.charAt(0)}</div>
+                                                <span className="text-xs">{v.name}</span>
+                                            </div>
+                                          );
+                                      })}
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
+               </div>
+
                <div className="w-full max-w-4xl p-6 mb-20 space-y-4"><h3 className="text-xl font-woodcut text-center text-inkDim uppercase tracking-widest border-b border-ink/10 pb-2">时间回溯 (Time Rewind)</h3><div className="bg-paper p-4 rounded border-2 border-dashed border-ink/20 space-y-2 text-sm font-mono h-64 overflow-y-auto custom-scrollbar">{gameState.log.length > 0 ? (gameState.log.map((entry, i) => (<div key={i} className="border-b border-dashed border-ink/10 pb-1 last:border-0 flex gap-2 text-left"><span className="opacity-40 select-none flex-none w-8">[{String(i+1).padStart(2, '0')}]</span><span>{entry}</span></div>))) : (<div className="text-center italic opacity-50 py-4">平静的夜晚，没有行动发生...</div>)}</div></div>
                {localPlayer?.isHost && (<div className="fixed bottom-6 w-full max-w-md px-6 z-20"><Button fullWidth onClick={handleResetGame}><span className="text-lg">再来一局 (New Ritual)</span></Button></div>)}
           </div>
@@ -917,7 +976,6 @@ const App: React.FC = () => {
       <div className="fixed top-0 left-0 w-full h-16 z-[9000] pointer-events-none flex justify-between items-center px-4">
           <div className="pointer-events-auto">{(gameState.roomCode || isConnecting) && (<button type="button" onClick={handleBack} className="w-12 h-12 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-rust hover:text-white hover:border-rust transition-all shadow-sketch font-serif font-bold text-2xl group cursor-pointer active:scale-90 active:bg-rust active:text-white" title={isConnecting ? "取消连接 / Cancel" : "退出房间 / Exit Room"}><span className="group-hover:-translate-x-0.5 transition-transform pb-1">←</span></button>)}</div>
           <div className="flex gap-2 pointer-events-auto">
-             {/* Host Mute Button */}
              {localPlayer?.isHost && (
                  <button onClick={() => setIsMuted(!isMuted)} className="w-12 h-12 bg-paper border-2 border-ink rounded-full flex items-center justify-center hover:bg-ink hover:text-paper transition-colors shadow-sketch font-serif font-bold text-xl cursor-pointer">
                     {isMuted ? '🔇' : '🔊'}
